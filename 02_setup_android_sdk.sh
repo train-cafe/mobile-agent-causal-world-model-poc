@@ -86,20 +86,39 @@ export PATH="${ANDROID_HOME}/cmdline-tools/latest/bin:${PATH}"
 export PATH="${ANDROID_HOME}/platform-tools:${PATH}"
 export PATH="${ANDROID_HOME}/emulator:${PATH}"
 
+# JAVA_HOME 명시 (sdkmanager 가 JDK를 못 찾을 경우 대비)
+if [[ -z "${JAVA_HOME:-}" ]]; then
+    JAVA_HOME=$(dirname "$(dirname "$(readlink -f "$(which java)")")")
+    export JAVA_HOME
+    echo "   → JAVA_HOME 자동 설정: ${JAVA_HOME}"
+fi
+
 # ─────────────────────────────────────────────────────────────────
 echo "================================================================"
 echo " [4/5] SDK 패키지 설치 (sdkmanager)"
 echo "       - platform-tools, emulator, system-image"
+echo "   ※ 라이선스 수락 및 다운로드 중... (수 분 소요, 커서 깜빡임 정상)"
 echo "================================================================"
 
 # 라이선스 자동 수락
-yes | sdkmanager --licenses > /dev/null 2>&1 || true
+# yes | 방식은 JVM stdin 처리 문제로 hang 발생 → printf + 파이프 방식으로 대체
+# sdkmanager 는 라이선스마다 'y\n' 을 요구 → 충분한 수(30개)를 미리 넣어줌
+printf 'y\n%.0s' {1..30} | sdkmanager --licenses 2>&1 \
+    | grep -v "^$" | grep -v "^---" || true
+echo "   → 라이선스 수락 완료"
 
-sdkmanager --install \
-    "platform-tools" \
-    "emulator" \
-    "platforms;android-${API_LEVEL}" \
-    "${SYS_IMAGE}"
+# SDK 패키지 설치 (--verbose 로 다운로드 진행률 출력)
+echo "   → platform-tools 설치 중..."
+sdkmanager --verbose "platform-tools" 2>&1 | tail -5
+
+echo "   → emulator 설치 중..."
+sdkmanager --verbose "emulator" 2>&1 | tail -5
+
+echo "   → platforms;android-${API_LEVEL} 설치 중..."
+sdkmanager --verbose "platforms;android-${API_LEVEL}" 2>&1 | tail -5
+
+echo "   → system-image 설치 중... (가장 오래 걸림, ~1-2 GB)"
+sdkmanager --verbose "${SYS_IMAGE}" 2>&1 | tail -5
 
 echo "   → SDK 설치 완료"
 
