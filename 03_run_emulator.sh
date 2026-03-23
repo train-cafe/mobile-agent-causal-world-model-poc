@@ -40,24 +40,46 @@ stop_existing() {
 }
 
 # ─────────────────────────────────────────────────────────────────
+ensure_xvfb() {
+    if command -v Xvfb &>/dev/null; then
+        return 0
+    fi
+    echo "   Xvfb 미설치 → sudo apt-get install -y xvfb 실행..."
+    sudo apt-get install -y xvfb
+    if ! command -v Xvfb &>/dev/null; then
+        return 1
+    fi
+}
+
+# ─────────────────────────────────────────────────────────────────
 echo "================================================================"
-echo " [1/4] Xvfb 가상 디스플레이 시작 (DISPLAY=:${DISPLAY_NUM})"
+echo " [1/4] 가상 디스플레이 준비"
 echo "================================================================"
 
 stop_existing
 
-Xvfb ":${DISPLAY_NUM}" -screen 0 "${XVFB_RESOLUTION}" \
-    > "${XVFB_LOG}" 2>&1 &
-XVFB_PID=$!
-export DISPLAY=":${DISPLAY_NUM}"
+XVFB_PID=""
+USE_XVFB=false
 
-# Xvfb 기동 대기
-sleep 2
-if ! kill -0 "${XVFB_PID}" 2>/dev/null; then
-    echo "❌ Xvfb 시작 실패. 로그: ${XVFB_LOG}"
-    exit 1
+if ensure_xvfb; then
+    USE_XVFB=true
+    echo "   → Xvfb 사용 (DISPLAY=:${DISPLAY_NUM})"
+    Xvfb ":${DISPLAY_NUM}" -screen 0 "${XVFB_RESOLUTION}" \
+        > "${XVFB_LOG}" 2>&1 &
+    XVFB_PID=$!
+    export DISPLAY=":${DISPLAY_NUM}"
+    sleep 2
+    if ! kill -0 "${XVFB_PID}" 2>/dev/null; then
+        echo "❌ Xvfb 시작 실패. 로그: ${XVFB_LOG}"
+        cat "${XVFB_LOG}" | tail -5
+        exit 1
+    fi
+    echo "   → Xvfb PID: ${XVFB_PID}  (DISPLAY=${DISPLAY})"
+else
+    # 최신 에뮬레이터(API 29+)는 -no-window 로 Xvfb 없이 헤드리스 동작
+    echo "   → Xvfb 설치 불가. 순수 헤드리스 모드로 실행 (-no-window, DISPLAY 미설정)"
+    unset DISPLAY 2>/dev/null || true
 fi
-echo "   → Xvfb PID: ${XVFB_PID}  (DISPLAY=${DISPLAY})"
 
 # ─────────────────────────────────────────────────────────────────
 echo "================================================================"
@@ -79,6 +101,14 @@ echo "================================================================"
 EMU_PID=$!
 echo "${EMU_PID}" > "${PID_FILE}"
 echo "   → 에뮬레이터 PID: ${EMU_PID}  (로그: ${EMU_LOG})"
+
+# 에뮬레이터가 즉시 종료되는 crash 감지 (3초 후 확인)
+sleep 3
+if ! kill -0 "${EMU_PID}" 2>/dev/null; then
+    echo "❌ 에뮬레이터가 즉시 종료됐습니다. 로그 확인:"
+    tail -20 "${EMU_LOG}"
+    exit 1
+fi
 
 # ─────────────────────────────────────────────────────────────────
 echo "================================================================"
@@ -128,8 +158,12 @@ echo "   ADB 장치 목록:"
 
 echo ""
 echo "✅ 에뮬레이터 실행 완료"
-echo "   DISPLAY     : ${DISPLAY}"
-echo "   Xvfb PID    : ${XVFB_PID}"
+if [[ -n "${DISPLAY:-}" ]]; then
+    echo "   DISPLAY     : ${DISPLAY}"
+fi
+if [[ -n "${XVFB_PID}" ]]; then
+    echo "   Xvfb PID    : ${XVFB_PID}"
+fi
 echo "   에뮬레이터 PID: ${EMU_PID}"
 echo "   ADB 시리얼  : ${DEVICE_SERIAL}"
 echo "   에뮬레이터 로그: ${EMU_LOG}"
@@ -139,5 +173,7 @@ echo "   kill \$(cat ${PID_FILE})"
 echo ""
 echo "▶  다음 단계: bash 04_setup_ws_scrcpy.sh"
 
-# PID 저장 (종료 스크립트용)
-echo "${XVFB_PID}" >> "${PID_FILE}"
+# PID 저장 (종료 스크립트용) — Xvfb PID도 기록
+if [[ -n "${XVFB_PID}" ]]; then
+    echo "${XVFB_PID}" >> "${PID_FILE}"
+fi
