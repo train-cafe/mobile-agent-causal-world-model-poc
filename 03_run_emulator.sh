@@ -32,6 +32,44 @@ export PATH="${ANDROID_HOME}/platform-tools:${PATH}"
 export PATH="${ANDROID_HOME}/emulator:${PATH}"
 
 # ─────────────────────────────────────────────────────────────────
+# 사전 검사: 필수 바이너리 존재 여부 확인
+# ─────────────────────────────────────────────────────────────────
+preflight_check() {
+    local ok=true
+    local checks=(
+        "${ANDROID_HOME}/emulator/emulator:emulator 바이너리"
+        "${ANDROID_HOME}/platform-tools/adb:adb 바이너리"
+    )
+    echo "================================================================"
+    echo " [0/4] 사전 검사"
+    echo "================================================================"
+    for entry in "${checks[@]}"; do
+        local path="${entry%%:*}"
+        local label="${entry##*:}"
+        if [[ -x "${path}" ]]; then
+            echo "   ✓ ${label}: ${path}"
+        else
+            echo "   ✗ ${label} 없음: ${path}"
+            ok=false
+        fi
+    done
+
+    if [[ "${ok}" == "false" ]]; then
+        echo ""
+        echo "❌ 필수 바이너리가 없습니다."
+        echo "   → 02_setup_android_sdk.sh 를 먼저 실행하세요."
+        echo ""
+        echo "   설치된 SDK 패키지 목록:"
+        "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --list_installed 2>/dev/null \
+            | grep -E "^  (emulator|platform-tools|system-images)" || echo "   (조회 실패)"
+        exit 1
+    fi
+    echo "   → 사전 검사 통과"
+}
+
+preflight_check
+
+# ─────────────────────────────────────────────────────────────────
 stop_existing() {
     echo "── 기존 에뮬레이터/Xvfb 프로세스 정리 ──"
     pkill -f "emulator.*${AVD_NAME}" 2>/dev/null && echo "   → 기존 에뮬레이터 종료" || true

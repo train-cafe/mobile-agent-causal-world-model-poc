@@ -107,18 +107,37 @@ printf 'y\n%.0s' {1..30} | sdkmanager --licenses 2>&1 \
     | grep -v "^$" | grep -v "^---" || true
 echo "   → 라이선스 수락 완료"
 
-# SDK 패키지 설치 (--verbose 로 다운로드 진행률 출력)
-echo "   → platform-tools 설치 중..."
-sdkmanager --verbose "platform-tools" 2>&1 | tail -5
+# SDK 패키지별 설치 + 설치 후 바이너리 존재 검증
+# ※ | tail 파이프 금지: sdkmanager 실패 exit code가 파이프에 묻혀 무시됨
 
-echo "   → emulator 설치 중..."
-sdkmanager --verbose "emulator" 2>&1 | tail -5
+sdk_install() {
+    local pkg="$1"
+    local check_path="${2:-}"
+    echo "   → [설치] ${pkg}"
+    # tee 로 실시간 출력 + 로그 저장, sdkmanager 실패 시 즉시 abort
+    sdkmanager --verbose "${pkg}" 2>&1 | tee -a "${LOG_DIR}/sdkmanager.log"
+    if [[ -n "${check_path}" && ! -e "${check_path}" ]]; then
+        echo "❌ 설치 후 파일이 없습니다: ${check_path}"
+        echo "   sdkmanager 로그: ${LOG_DIR}/sdkmanager.log"
+        exit 1
+    fi
+    echo "   → [완료] ${pkg}"
+}
 
-echo "   → platforms;android-${API_LEVEL} 설치 중..."
-sdkmanager --verbose "platforms;android-${API_LEVEL}" 2>&1 | tail -5
+mkdir -p "${LOG_DIR}"
+
+sdk_install "platform-tools" \
+    "${ANDROID_HOME}/platform-tools/adb"
+
+sdk_install "emulator" \
+    "${ANDROID_HOME}/emulator/emulator"
+
+sdk_install "platforms;android-${API_LEVEL}" \
+    "${ANDROID_HOME}/platforms/android-${API_LEVEL}"
 
 echo "   → system-image 설치 중... (가장 오래 걸림, ~1-2 GB)"
-sdkmanager --verbose "${SYS_IMAGE}" 2>&1 | tail -5
+sdk_install "${SYS_IMAGE}" \
+    "${ANDROID_HOME}/system-images/android-${API_LEVEL}/google_apis/${ABI}/system.img"
 
 echo "   → SDK 설치 완료"
 
