@@ -13,6 +13,7 @@ set -euo pipefail
 ANDROID_HOME="${HOME}/.android/sdk"
 CMDLINE_TOOLS_URL="https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip"
 CMDLINE_TOOLS_ZIP="${HOME}/.android/cmdline-tools.zip"
+LOG_DIR="${HOME}/.android/logs"      # ← sdk_install 함수에서 참조하므로 반드시 상단에 정의
 
 # 에뮬레이터 이미지 설정
 API_LEVEL="34"                       # Android 14
@@ -104,6 +105,8 @@ echo "================================================================"
 # yes | 방식은 JVM stdin 처리 문제로 hang 발생 → printf + 파이프 방식으로 대체
 # sdkmanager 는 라이선스마다 'y\n' 을 요구 → 충분한 수(30개)를 미리 넣어줌
 printf 'y\n%.0s' {1..30} | sdkmanager --licenses 2>&1 \
+    | grep -v "^$" | grep -v "^---" || \
+printf 'y\n%.0s' {1..30} | sdkmanager --no_https --licenses 2>&1 \
     | grep -v "^$" | grep -v "^---" || true
 echo "   → 라이선스 수락 완료"
 
@@ -113,12 +116,34 @@ echo "   → 라이선스 수락 완료"
 sdk_install() {
     local pkg="$1"
     local check_path="${2:-}"
+    local sdklog="${LOG_DIR}/sdkmanager.log"
     echo "   → [설치] ${pkg}"
-    # tee 로 실시간 출력 + 로그 저장, sdkmanager 실패 시 즉시 abort
-    sdkmanager --verbose "${pkg}" 2>&1 | tee -a "${LOG_DIR}/sdkmanager.log"
+
+    # 1차 시도: 기본 HTTPS
+    # PIPESTATUS 로 파이프 왼쪽(sdkmanager)의 exit code만 추출
+    set +e
+    sdkmanager --verbose "${pkg}" 2>&1 | tee -a "${sdklog}"
+    local rc="${PIPESTATUS[0]}"
+    set -e
+
+    # 실패하거나 파일이 없으면 --no_https 로 재시도
+    if [[ "${rc}" -ne 0 ]] || [[ -n "${check_path}" && ! -e "${check_path}" ]]; then
+        echo "   ⚠ HTTPS 시도 실패(rc=${rc}). --no_https 로 재시도..."
+        set +e
+        sdkmanager --verbose --no_https "${pkg}" 2>&1 | tee -a "${sdklog}"
+        rc="${PIPESTATUS[0]}"
+        set -e
+    fi
+
+    if [[ "${rc}" -ne 0 ]]; then
+        echo "❌ sdkmanager 실패 (exit ${rc}): ${pkg}"
+        echo "   로그: ${sdklog}"
+        exit 1
+    fi
+
     if [[ -n "${check_path}" && ! -e "${check_path}" ]]; then
         echo "❌ 설치 후 파일이 없습니다: ${check_path}"
-        echo "   sdkmanager 로그: ${LOG_DIR}/sdkmanager.log"
+        echo "   로그: ${sdklog}"
         exit 1
     fi
     echo "   → [완료] ${pkg}"
