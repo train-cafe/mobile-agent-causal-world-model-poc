@@ -64,10 +64,60 @@ pip install -q \
     pillow \
     requests
 
+pip install -q "huggingface_hub[cli]"
 echo "   → 설치 완료"
 
 echo "================================================================"
-echo " [3/4] GPU 상태 확인"
+echo " [3/4] 모델 다운로드 (HuggingFace 캐시)"
+echo "================================================================"
+# vLLM이 on-the-fly 다운로드 시 429 Rate Limit 에러를 피하기 위해
+# 미리 snapshot_download로 모델을 캐시에 받아둠
+
+# HF_HOME 기본값 설정 (커스텀 경로 사용 시 환경변수로 오버라이드 가능)
+export HF_HOME="${HF_HOME:-${HOME}/.cache/huggingface}"
+echo "   HF_HOME: ${HF_HOME}"
+
+# 이미 캐시에 있는지 확인
+MODEL_CACHED=$(python3 -c "
+from huggingface_hub import scan_cache_dir
+cache = scan_cache_dir()
+for repo in cache.repos:
+    if repo.repo_id == '${MODEL}':
+        print('yes')
+        break
+" 2>/dev/null || echo "no")
+
+if [[ "${MODEL_CACHED}" == "yes" ]]; then
+    echo "   ✅ 모델 캐시 확인됨: ${MODEL}"
+else
+    echo "   → 모델 다운로드 중: ${MODEL}"
+    echo "      (32B 모델 약 65GB, 시간이 걸립니다)"
+    # HF_TOKEN 환경변수가 있으면 인증 추가 (private 모델 / rate limit 완화)
+    if [[ -n "${HF_TOKEN:-}" ]]; then
+        echo "      HF_TOKEN 인증 사용"
+    fi
+    python3 - <<PYEOF
+import os, sys
+from huggingface_hub import snapshot_download
+
+try:
+    path = snapshot_download(
+        repo_id="${MODEL}",
+        token=os.environ.get("HF_TOKEN"),
+        ignore_patterns=["*.pt", "original/*"],  # safetensors만
+        resume_download=True,
+    )
+    print(f"   ✅ 다운로드 완료: {path}")
+except Exception as e:
+    print(f"   ❌ 다운로드 실패: {e}", file=sys.stderr)
+    print("   HF_TOKEN 환경변수 설정 후 재시도하거나,", file=sys.stderr)
+    print("   huggingface-cli login 으로 로그인 후 재실행하세요.", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+fi
+
+echo "================================================================"
+echo " [4/5] GPU 상태 확인"
 echo "================================================================"
 if ! command -v nvidia-smi &>/dev/null; then
     echo "⚠️  nvidia-smi 없음. GPU 확인 불가. 계속 진행합니다."
@@ -78,7 +128,7 @@ else
 fi
 
 echo "================================================================"
-echo " [4/4] vLLM OpenAI-compatible 서버 백그라운드 실행"
+echo " [5/5] vLLM OpenAI-compatible 서버 백그라운드 실행"
 echo "================================================================"
 
 # 기존 프로세스 정리
