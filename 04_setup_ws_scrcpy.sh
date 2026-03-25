@@ -162,18 +162,18 @@ fi
 
 # ws-scrcpy 서버 실행: dist/ 디렉토리 안에서 node ./index.js
 # (npm run script:dist:start 와 동일: cd dist && node ./index.js)
-WS_SCRCPY_PORT="${WS_SCRCPY_PORT}" \
-    nohup node "${WS_SCRCPY_DIR}/dist/index.js" \
-        --port "${WS_SCRCPY_PORT}" \
-        > "${WS_LOG}" 2>&1 &
+# ※ ws-scrcpy 는 --port CLI 인자 미지원, 기본 포트 8000 사용
+#   포트 변경이 필요하면 WS_SCRCPY_CONFIG 환경변수로 YAML 설정파일 지정
+(cd "${WS_SCRCPY_DIR}/dist" && nohup node ./index.js \
+    > "${WS_LOG}" 2>&1 &
+echo $! > "${WS_PID_FILE}")
 
-WS_PID=$!
-echo "${WS_PID}" > "${WS_PID_FILE}"
+WS_PID=$(cat "${WS_PID_FILE}")
 
-# 서버 기동 확인 (최대 15초 대기)
+# 서버 기동 확인 (최대 30초 대기)
 echo "   서버 기동 대기 중..."
 STARTED=false
-for i in $(seq 1 15); do
+for i in $(seq 1 30); do
     sleep 1
     if ! kill -0 "${WS_PID}" 2>/dev/null; then
         echo "❌ ws-scrcpy 프로세스가 예기치 않게 종료됐습니다."
