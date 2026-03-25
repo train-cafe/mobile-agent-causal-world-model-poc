@@ -145,10 +145,15 @@ echo " [4/5] 프로덕션 빌드 (npm run dist)"
 echo "================================================================"
 npm run dist
 
-# dist/ 디렉토리 내 외부 의존성 설치 (adbkit, node-pty, ws 등 webpack externals)
-echo "   → dist/ 의존성 설치 중..."
-(cd "${WS_SCRCPY_DIR}/dist" && npm install --production 2>&1) | tail -5
-echo "   → dist/ 의존성 설치 완료"
+# dist/ 의 외부 의존성은 루트 node_modules 심볼릭 링크로 해결
+# (dist/ 에서 별도 npm install 하면 레지스트리 hang 위험이 있고,
+#  루트에 이미 adbkit, node-pty, ws 등이 설치되어 있어 재설치 불필요)
+if [[ ! -e "${WS_SCRCPY_DIR}/dist/node_modules" ]]; then
+    echo "   → dist/node_modules → 루트 node_modules 심볼릭 링크 생성"
+    ln -sf "${WS_SCRCPY_DIR}/node_modules" "${WS_SCRCPY_DIR}/dist/node_modules"
+else
+    echo "   → dist/node_modules 이미 존재"
+fi
 
 # ─────────────────────────────────────────────────────────────────
 echo "================================================================"
