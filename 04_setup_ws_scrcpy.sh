@@ -160,15 +160,24 @@ echo "================================================================"
 echo " [5/5] ws-scrcpy 서버 백그라운드 실행 (포트: ${WS_SCRCPY_PORT})"
 echo "================================================================"
 
-# 기존 실행 중인 프로세스 정리
+# 기존 실행 중인 프로세스 정리 (PID 파일 + 포트 점유 프로세스 모두 종료)
 if [[ -f "${WS_PID_FILE}" ]]; then
     OLD_PID=$(cat "${WS_PID_FILE}" 2>/dev/null || true)
     if [[ -n "${OLD_PID}" ]] && kill -0 "${OLD_PID}" 2>/dev/null; then
         echo "   → 기존 ws-scrcpy 프로세스(PID: ${OLD_PID}) 종료"
         kill "${OLD_PID}" 2>/dev/null || true
-        sleep 1
     fi
 fi
+# 포트를 점유한 프로세스도 강제 종료 (EADDRINUSE 방지)
+PORT_PIDS=$(ss -tlnp 2>/dev/null | grep ":${WS_SCRCPY_PORT} " | grep -oP 'pid=\K[0-9]+' || true)
+if [[ -z "${PORT_PIDS}" ]]; then
+    PORT_PIDS=$(fuser "${WS_SCRCPY_PORT}/tcp" 2>/dev/null || true)
+fi
+if [[ -n "${PORT_PIDS}" ]]; then
+    echo "   → 포트 ${WS_SCRCPY_PORT} 점유 프로세스(${PORT_PIDS}) 강제 종료"
+    kill ${PORT_PIDS} 2>/dev/null || true
+fi
+sleep 2
 
 # ws-scrcpy 서버 실행: dist/ 디렉토리 안에서 node ./index.js
 # (npm run script:dist:start 와 동일: cd dist && node ./index.js)
