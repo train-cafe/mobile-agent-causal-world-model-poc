@@ -21,7 +21,9 @@ set -euo pipefail
 # 설정값
 # ─────────────────────────────────────────────────────────────────
 API_LEVEL="34"
-ABI="x86_64"
+# KVM 없는 서버 환경 → arm64-v8a (QEMU TCG 소프트웨어 에뮬레이션)
+# KVM 있는 환경에서는 x86_64 로 변경 가능
+ABI="arm64-v8a"
 SYS_IMAGE_PATH="system-images;android-${API_LEVEL};google_apis;${ABI}"
 
 WORK_DIR="${HOME}/.android-sdk-prep"

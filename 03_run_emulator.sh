@@ -10,10 +10,17 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────
 # 설정값 (02_setup_android_sdk.sh 와 동일하게 유지)
 # ─────────────────────────────────────────────────────────────────
-AVD_NAME="Pixel6_API34"
+# KVM 사용 가능 여부에 따라 AVD_NAME / ABI 자동 선택
+# (02_setup_android_sdk.sh 와 동일한 로직)
+if [[ -r /dev/kvm ]]; then
+    ABI="x86_64"
+else
+    ABI="arm64-v8a"
+fi
+AVD_NAME="Pixel6_API34_${ABI}"
 DISPLAY_NUM=99          # Xvfb 가상 디스플레이 번호
 XVFB_RESOLUTION="1080x1920x24"
-ADB_WAIT_TIMEOUT=300    # seconds
+ADB_WAIT_TIMEOUT=900    # seconds (arm64 소프트웨어 에뮬레이션 기준, KVM x86_64 는 300s면 충분)
 
 # 로그 파일
 LOG_DIR="${HOME}/.android/logs"
@@ -125,6 +132,15 @@ echo " [2/4] Android 에뮬레이터 백그라운드 실행"
 echo "       AVD: ${AVD_NAME}"
 echo "================================================================"
 
+# arm64-v8a: KVM 없이 QEMU TCG 소프트웨어 에뮬레이션
+# x86_64  : KVM 가속 사용
+if [[ "${ABI}" == "arm64-v8a" ]]; then
+    echo "   ※ arm64 소프트웨어 에뮬레이션 — 부팅까지 10-20분 소요될 수 있습니다"
+    EMU_ACCEL_FLAGS="-accel off"
+else
+    EMU_ACCEL_FLAGS=""
+fi
+
 "${ANDROID_HOME}/emulator/emulator" \
     -avd "${AVD_NAME}" \
     -no-window \
@@ -132,6 +148,7 @@ echo "================================================================"
     -no-boot-anim \
     -no-snapshot-save \
     -gpu swiftshader_indirect \
+    ${EMU_ACCEL_FLAGS} \
     -memory 2048 \
     -cores 2 \
     > "${EMU_LOG}" 2>&1 &

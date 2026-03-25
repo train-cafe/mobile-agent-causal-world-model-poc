@@ -17,9 +17,18 @@ LOG_DIR="${HOME}/.android/logs"      # ← sdk_install 함수에서 참조하므
 
 # 에뮬레이터 이미지 설정
 API_LEVEL="34"                       # Android 14
-ABI="x86_64"                         # 서버 x86_64 환경
+# KVM 사용 가능 여부에 따라 ABI 자동 선택
+# - x86_64: KVM 필수, 빠름
+# - arm64-v8a: KVM 불필요, QEMU TCG 소프트웨어 에뮬레이션 (느리지만 동작함)
+if [[ -r /dev/kvm ]]; then
+    ABI="x86_64"
+    echo "   KVM 사용 가능 → ABI: x86_64"
+else
+    ABI="arm64-v8a"
+    echo "   KVM 없음 → ABI: arm64-v8a (소프트웨어 에뮬레이션)"
+fi
 SYS_IMAGE="system-images;android-${API_LEVEL};google_apis;${ABI}"
-AVD_NAME="Pixel6_API${API_LEVEL}"
+AVD_NAME="Pixel6_API${API_LEVEL}_${ABI}"
 DEVICE_PROFILE="pixel_6"             # avdmanager 내장 디바이스
 
 # ─────────────────────────────────────────────────────────────────
