@@ -145,6 +145,11 @@ echo " [4/5] 프로덕션 빌드 (npm run dist)"
 echo "================================================================"
 npm run dist
 
+# dist/ 디렉토리 내 외부 의존성 설치 (adbkit, node-pty, ws 등 webpack externals)
+echo "   → dist/ 의존성 설치 중..."
+(cd "${WS_SCRCPY_DIR}/dist" && npm install --production 2>&1) | tail -5
+echo "   → dist/ 의존성 설치 완료"
+
 # ─────────────────────────────────────────────────────────────────
 echo "================================================================"
 echo " [5/5] ws-scrcpy 서버 백그라운드 실행 (포트: ${WS_SCRCPY_PORT})"
