@@ -10,13 +10,8 @@ set -euo pipefail
 # ─────────────────────────────────────────────────────────────────
 # 설정값 (02_setup_android_sdk.sh 와 동일하게 유지)
 # ─────────────────────────────────────────────────────────────────
-# KVM 사용 가능 여부에 따라 AVD_NAME / ABI 자동 선택
-# (02_setup_android_sdk.sh 와 동일한 로직)
-if [[ -r /dev/kvm ]]; then
-    ABI="x86_64"
-else
-    ABI="arm64-v8a"
-fi
+# x86_64 호스트에서는 항상 x86_64 이미지 사용
+ABI="x86_64"
 AVD_NAME="Pixel6_API34_${ABI}"
 DISPLAY_NUM=99          # Xvfb 가상 디스플레이 번호
 XVFB_RESOLUTION="1080x1920x24"
@@ -132,13 +127,15 @@ echo " [2/4] Android 에뮬레이터 백그라운드 실행"
 echo "       AVD: ${AVD_NAME}"
 echo "================================================================"
 
-# arm64-v8a: KVM 없이 QEMU TCG 소프트웨어 에뮬레이션
-# x86_64  : KVM 가속 사용
-if [[ "${ABI}" == "arm64-v8a" ]]; then
-    echo "   ※ arm64 소프트웨어 에뮬레이션 — 부팅까지 10-20분 소요될 수 있습니다"
-    EMU_ACCEL_FLAGS="-accel off"
+# KVM 가속 여부에 따라 accel 플래그 설정
+# - KVM 있음: -accel kvm (빠름)
+# - KVM 없음: -accel tcg (소프트웨어 에뮬레이션, 느리지만 KVM 없이도 동작)
+if [[ -r /dev/kvm ]]; then
+    EMU_ACCEL_FLAGS="-accel kvm"
+    echo "   KVM 사용"
 else
-    EMU_ACCEL_FLAGS=""
+    EMU_ACCEL_FLAGS="-accel tcg"
+    echo "   ※ KVM 없음 → -accel tcg 소프트웨어 에뮬레이션 (부팅까지 수십 분 소요 가능)"
 fi
 
 "${ANDROID_HOME}/emulator/emulator" \
