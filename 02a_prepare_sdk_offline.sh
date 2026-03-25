@@ -54,14 +54,34 @@ ensure_deps() {
 }
 
 # 이미 다운로드된 경우 스킵, 없으면 wget (3회 재시도)
+# zip 파일은 무결성 검사 후 손상된 경우 재다운로드
 wget_dl() {
     local url="$1" out="$2"
     if [[ -f "${out}" ]]; then
-        echo "   → 캐시 사용: $(basename "${out}")"
-        return
+        if [[ "${out}" == *.zip ]]; then
+            if unzip -t "${out}" &>/dev/null 2>&1; then
+                echo "   → 캐시 사용: $(basename "${out}")"
+                return
+            else
+                echo "   → 캐시 zip 손상됨, 삭제 후 재다운로드: $(basename "${out}")"
+                rm -f "${out}"
+            fi
+        else
+            echo "   → 캐시 사용: $(basename "${out}")"
+            return
+        fi
     fi
     echo "   → wget: ${url}"
     wget -q --show-progress --tries=3 -O "${out}" "${url}"
+    # 다운로드 직후 zip 무결성 확인
+    if [[ "${out}" == *.zip ]]; then
+        if ! unzip -t "${out}" &>/dev/null 2>&1; then
+            echo "❌ 다운로드된 zip 파일이 손상됨: $(basename "${out}")"
+            echo "   파일 삭제 후 다시 실행하세요."
+            rm -f "${out}"
+            exit 1
+        fi
+    fi
 }
 
 # zip 최상위 디렉토리를 벗겨내고 target 에 설치
