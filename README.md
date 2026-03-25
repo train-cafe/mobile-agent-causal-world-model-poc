@@ -1,19 +1,29 @@
-# Mobile Agent (AppAgent) — Headless Ubuntu + Local VLM 세팅
+# Mobile Agent + Causal World Model PoC
 
-GUI 없는 Ubuntu 서버에서 Android 에뮬레이터를 띄우고, 브라우저로 원격 접속하며,
-H100 GPU로 로컬 Vision-Language Model을 서빙해 AppAgent가 자율적으로 앱을 조작하는
-전체 환경을 자동화한 스크립트 모음입니다.
+AppAgent에 Pearl's Causality Ladder Level 2 (Intervention) 추론 능력을 추가하는
+Causal World Model 래퍼 구현 및 실험 환경 세팅 스크립트 모음입니다.
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│  브라우저 (ws-scrcpy :8000)                                 │
-│        ↕                                                    │
-│  Android 에뮬레이터 (ADB emulator-5554)                     │
-│        ↕                                                    │
-│  AppAgent  ──→  vLLM API (:8080)  ──→  H100 x2 GPU         │
-│              Qwen3-VL-32B-Instruct                          │
-└─────────────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────┐
+│                        로컬 PC                                    │
+│                                                                  │
+│  Android 에뮬레이터 (ADB + KVM 가속)                              │
+│        ↕ ADB                                                     │
+│  AppAgent + Causal World Model 래퍼                              │
+│        ↕ OpenAI 호환 API                                         │
+├──────────────────────────────────────────────────────────────────┤
+│                      원격 H100 서버                               │
+│                                                                  │
+│  vLLM (:8080) ──→ H100 x2 GPU                                   │
+│  Qwen3-VL-32B-Instruct                                           │
+└──────────────────────────────────────────────────────────────────┘
 ```
+
+> **왜 에뮬레이터를 로컬로 이전했나?**
+> H100은 AI 텐서 연산에 특화된 GPU이며 Android 그래픽 렌더링에는 적합하지 않습니다.
+> 서버의 에뮬레이터는 swiftshader_indirect(CPU-only) 소프트웨어 렌더링에 의존하여
+> ANR/극심한 렉이 발생합니다. VLM 서빙은 서버에, 에뮬레이터는 KVM + GPU가 있는 로컬에서
+> 실행하는 것이 올바른 구조입니다.
 
 ---
 
@@ -43,21 +53,29 @@ H100 GPU로 로컬 Vision-Language Model을 서빙해 AppAgent가 자율적으�
 ## 전체 실행 순서 요약
 
 ```bash
-# Step 1: Android 에뮬레이터 환경
-bash 01_install_packages.sh     # 시스템 패키지
+# ─── 원격 서버에서 실행 ───────────────────────────────────────────
+# Step 1: vLLM 서빙 (H100 x2)
+bash 05_setup_vllm.sh           # vLLM + Qwen3-VL-32B 서빙 (포트 8080)
+
+# ─── 로컬 PC에서 실행 ────────────────────────────────────────────
+# Step 2: 에뮬레이터 준비 (Android Studio 또는 CLI)
+# Android Studio → AVD Manager → Pixel 6 / API 34 실행
+# 또는 CLI:
+bash 01_install_packages.sh     # 시스템 패키지 (로컬 Ubuntu 기준)
 bash 02_setup_android_sdk.sh    # Android SDK + AVD
-bash 03_run_emulator.sh         # 헤드리스 에뮬레이터 실행
-bash 04_setup_ws_scrcpy.sh      # 브라우저 원격 화면 서버
+bash 03_run_emulator.sh         # KVM 가속 에뮬레이터 실행
 
-# Step 2: VLM 서빙 + AppAgent
-bash 05_setup_vllm.sh           # vLLM + Qwen3-VL-32B 서빙
-bash 06_setup_appagent.sh       # AppAgent 설치 + 로컬 VLM 연동
+# Step 3: Causal World Model + AppAgent 설정
+SERVER_IP="10.7.60.145" bash 07_local_setup.sh
 
-# 통합 테스트
+# 통합 테스트 (원격 vLLM 연결 확인)
 source ~/AppAgent/.env_appagent
 source ~/appagent-env/bin/activate
-python test_appagent_integration.py
+VLLM_HOST="10.7.60.145" python test_appagent_integration.py
 ```
+
+> 기존 서버 올인원 방식 (`06_setup_appagent.sh`)도 유지됩니다.
+> 서버에서 에뮬레이터와 vLLM을 함께 실행하려면 기존 방식을 사용하세요.
 
 ---
 
@@ -317,10 +335,14 @@ adb shell pm list packages | grep -v "package:com.google\|package:com.android" |
 ├── 01_install_packages.sh        # apt-get 패키지 설치
 ├── 02_setup_android_sdk.sh       # Android SDK + AVD 생성
 ├── 02a_prepare_sdk_offline.sh    # 방화벽 환경용 오프라인 번들 준비 (로컬 실행)
-├── 03_run_emulator.sh            # 헤드리스 에뮬레이터 실행
+├── 03_run_emulator.sh            # KVM 가속 에뮬레이터 실행
 ├── 04_setup_ws_scrcpy.sh         # ws-scrcpy 원격 화면 서버 (포트 8000)
-├── 05_setup_vllm.sh              # vLLM + Qwen3-VL-32B 서빙 (포트 8080)
-├── 06_setup_appagent.sh          # AppAgent 클론 + 로컬 VLM 연동
+├── 05_setup_vllm.sh              # vLLM + Qwen3-VL-32B 서빙 (포트 8080, 서버)
+├── 06_setup_appagent.sh          # AppAgent 설치 + 서버 내 vLLM 연동 (서버 올인원)
+├── 07_local_setup.sh             # AppAgent 설치 + 원격 vLLM 연동 (로컬 PC 권장)
+├── causal_wrapper.py             # Causal World Model 프롬프트 래퍼
+├── patch_task_executor.py        # task_executor.py 자동 패치 스크립트
+├── poc_experiment.py             # Control vs Treatment 비교 실험 실행기
 ├── test_appagent_integration.py  # VLM + ADB 통합 테스트
 └── README.md
 ```
@@ -348,6 +370,111 @@ adb shell pm list packages | grep -v "package:com.google\|package:com.android" |
 | 5554/5555 | Android 에뮬레이터 | ADB 연결 |
 | 8000 | ws-scrcpy | 브라우저 원격 화면 |
 | 8080 | vLLM | OpenAI 호환 API |
+
+---
+
+---
+
+## Step 3 — Causal World Model PoC (로컬 PC 권장)
+
+### 7단계 — 로컬 PC 설정 (원격 vLLM 연결)
+
+```bash
+# 원격 서버 IP 지정 후 실행
+SERVER_IP="10.7.60.145" bash 07_local_setup.sh
+```
+
+수행 내용:
+1. `~/AppAgent` 클론 + `~/appagent-env` 의존성 설치
+2. `config.yaml` 생성 — `OPENAI_API_BASE`를 원격 vLLM으로 설정 + `CAUSAL_MODE: true`
+3. `causal_wrapper.py` → `~/AppAgent/scripts/` 복사
+4. `patch_task_executor.py` 실행 → `task_executor.py` 에 4줄 자동 삽입
+5. `.env_appagent` 환경변수 파일 생성
+
+**패치 내용 (`task_executor.py` 변경 사항):**
+```python
+# [1] 파일 상단: import 추가
+from causal_wrapper import CausalWorldModel
+
+# [2] 루프 시작 전: 초기화
+causal_model = CausalWorldModel(task_desc) if configs.get("CAUSAL_MODE", True) else None
+
+# [3] VLM 호출 직전: 프롬프트 래핑
+if causal_model is not None:
+    prompt = causal_model.wrap_prompt(prompt, last_act)
+# status, rsp = mllm.get_model_response(prompt, [image])  ← 원본
+
+# [4] 응답 파싱 후: 액션 이력 기록
+if causal_model is not None and res:
+    causal_model.record_action(round_count, action, summary)
+```
+
+---
+
+### Causal World Model 동작 원리
+
+VLM 호출 직전, 원본 AppAgent 프롬프트 뒤에 두 섹션이 추가됩니다:
+
+**`[CAUSAL STATE HISTORY]`** — 이전 액션들의 인과 체인:
+```
+Step 1: Tapped '짜장면' menu item → 메뉴 상세 페이지로 이동 (옵션 선택 필요)
+Step 2: Tapped '수량+' → 수량이 1에서 2로 변경
+```
+
+**`[CAUSAL REASONING GUIDE]`** — 액션 선택 전 상태 전이 추론 강제:
+```
+1. GOAL: 현재 태스크 = "짜장면을 장바구니에 담기"
+2. PREDICT: 각 후보 액션의 결과 UI 상태를 예측하라
+3. IRREVERSIBLE ACTIONS: '바로구매' = 즉시 결제 → 목표와 다름
+4. INTERMEDIATE STATE CHECK: 팝업은 FINISH가 아닌 중간 상태
+5. OPTION COMPLETENESS: 담기 전 필수 옵션 선택 완료 확인
+```
+
+**Pearl Causality Ladder 위치:**
+
+| Level | 질문 유형 | AppAgent 기본 | +Causal 래퍼 |
+|-------|----------|--------------|-------------|
+| 1 (Association) | "이 화면에서 보통 뭘 누르나?" | ✅ | ✅ |
+| 2 (Intervention) | "이 버튼을 누르면 어떤 상태가 되나?" | ❌ | ✅ |
+| 3 (Counterfactual) | "다른 버튼을 눌렀다면?" | ❌ | ❌ (향후) |
+
+---
+
+### PoC 실험 시나리오
+
+3가지 "VLM 스케일업으로 해결 불가능한 구조적 오류 클래스"를 검증합니다:
+
+| 시나리오 | Causal 없이 발생하는 오류 | Causal 래퍼가 막는 방법 |
+|----------|--------------------------|------------------------|
+| **옵션 미선택 담기** | 필수 옵션 미선택 → 오류 팝업 | 상태 예측: 옵션 먼저 선택 |
+| **바로구매 vs 담기 혼동** | 즉시 구매 진행 | 비가역 액션 경고 |
+| **확인 팝업 완료 오판** | 팝업 상태에서 FINISH | 중간 상태 → 닫기 지시 |
+
+**실험 실행:**
+```bash
+source ~/AppAgent/.env_appagent
+source ~/appagent-env/bin/activate
+cd ~/path/to/mobile-agent-causal-world-model-poc
+
+# Control (Causal 없이) — 5회 반복
+CAUSAL_MODE=false python poc_experiment.py --scenario cart_add --mode control --rounds 5
+
+# Treatment (Causal 있이) — 5회 반복
+CAUSAL_MODE=true python poc_experiment.py --scenario cart_add --mode treatment --rounds 5
+
+# 결과 비교
+python poc_experiment.py --compare --scenario cart_add
+```
+
+**예상 결과:**
+```
+=== PoC 결과 비교 ===
+지표                           Control    Treatment   개선율
+wrong_button_rate              4/5        1/5         75%↓
+premature_finish_rate          3/5        0/5         100%↓
+missing_option_rate            5/5        1/5         80%↓
+task_success_rate              1/5        4/5         300%↑
+```
 
 ---
 

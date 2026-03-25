@@ -1,0 +1,237 @@
+#!/usr/bin/env bash
+# =============================================================================
+# 07_local_setup.sh
+# 로컬 PC에서 AppAgent 실행 + 원격 vLLM 서버 연동
+#
+# 사용법:
+#   SERVER_IP="10.7.60.145" bash 07_local_setup.sh
+#
+# 전제 조건:
+#   - 로컬 PC에 Android 에뮬레이터 또는 기기가 ADB로 연결되어 있어야 함
+#   - 원격 서버에서 05_setup_vllm.sh 가 먼저 실행되어야 함
+#   - CUDA/GPU가 없어도 됨 (VLM 추론은 원격 서버에서 실행)
+# =============================================================================
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# ─── 설정값 ───────────────────────────────────────────────────────────────────
+APPAGENT_DIR="${HOME}/AppAgent"
+APPAGENT_VENV="${HOME}/appagent-env"
+APPAGENT_REPO="https://github.com/mnotgod96/AppAgent.git"
+
+# 원격 vLLM 서버 주소 (필수: SERVER_IP 환경변수로 지정)
+SERVER_IP="${SERVER_IP:-}"
+VLLM_HOST="${VLLM_HOST:-${SERVER_IP}}"
+VLLM_PORT="${VLLM_PORT:-8080}"
+
+if [[ -z "${VLLM_HOST}" ]]; then
+    echo "❌ 오류: SERVER_IP (또는 VLLM_HOST) 환경변수를 설정해주세요."
+    echo "   사용법: SERVER_IP=\"10.7.60.145\" bash $0"
+    exit 1
+fi
+
+VLLM_BASE_URL="http://${VLLM_HOST}:${VLLM_PORT}/v1"
+APPAGENT_API_BASE="${VLLM_BASE_URL}/chat/completions"
+
+MODEL="${MODEL:-Qwen/Qwen3-VL-32B-Instruct}"
+MAX_TOKENS="${MAX_TOKENS:-2048}"
+TEMPERATURE="${TEMPERATURE:-0.0}"
+REQUEST_INTERVAL="${REQUEST_INTERVAL:-3}"
+MAX_ROUNDS="${MAX_ROUNDS:-20}"
+
+ADB_SCREENSHOT_DIR="${ADB_SCREENSHOT_DIR:-/sdcard}"
+# ─────────────────────────────────────────────────────────────────────────────
+
+echo "================================================================"
+echo " [1/5] AppAgent 리포지토리 클론 / 업데이트"
+echo "================================================================"
+if [[ -d "${APPAGENT_DIR}/.git" ]]; then
+    echo "   → 이미 클론됨. 최신화..."
+    git -C "${APPAGENT_DIR}" pull --rebase origin main 2>/dev/null || \
+    git -C "${APPAGENT_DIR}" pull --rebase origin master 2>/dev/null || true
+else
+    echo "   → 클론 중: ${APPAGENT_REPO}"
+    git clone "${APPAGENT_REPO}" "${APPAGENT_DIR}"
+fi
+echo "   → AppAgent 위치: ${APPAGENT_DIR}"
+
+echo "================================================================"
+echo " [2/5] Python 가상환경 생성 및 의존성 설치"
+echo "================================================================"
+if [[ ! -d "${APPAGENT_VENV}" ]]; then
+    echo "   → venv 생성: ${APPAGENT_VENV}"
+    python3 -m venv "${APPAGENT_VENV}"
+fi
+source "${APPAGENT_VENV}/bin/activate"
+echo "   Python: $(python --version)"
+
+pip install --upgrade pip -q
+
+if [[ -f "${APPAGENT_DIR}/requirements.txt" ]]; then
+    echo "   → requirements.txt 설치..."
+    pip install -r "${APPAGENT_DIR}/requirements.txt" -q
+fi
+
+pip install -q \
+    openai \
+    Pillow \
+    pyyaml \
+    colorama \
+    requests \
+    lxml \
+    uiautomator2
+
+pip install -q matplotlib 2>/dev/null || true
+pip install -q sounddevice 2>/dev/null || true
+
+echo "   → 의존성 설치 완료"
+
+echo "================================================================"
+echo " [3/5] 원격 vLLM 서버 연결 확인 및 config.yaml 생성"
+echo "================================================================"
+CONFIG_FILE="${APPAGENT_DIR}/config.yaml"
+
+echo "   → vLLM 서버 연결 확인 중: http://${VLLM_HOST}:${VLLM_PORT}/health"
+VLLM_STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+    "http://${VLLM_HOST}:${VLLM_PORT}/health" 2>/dev/null || echo "000")
+
+if [[ "${VLLM_STATUS}" == "200" ]]; then
+    echo "   ✅ vLLM 서버 응답 정상"
+    SERVED_MODEL=$(curl -s "http://${VLLM_HOST}:${VLLM_PORT}/v1/models" 2>/dev/null \
+        | python3 -c "
+import json, sys
+try:
+    d = json.load(sys.stdin)
+    models = [m['id'] for m in d.get('data', [])]
+    print(models[0] if models else '')
+except:
+    print('')
+" 2>/dev/null || true)
+    if [[ -n "${SERVED_MODEL}" ]]; then
+        MODEL="${SERVED_MODEL}"
+        echo "   → 서빙 중인 모델: ${MODEL}"
+    fi
+else
+    echo "   ⚠️  vLLM 서버 미응답 (HTTP ${VLLM_STATUS})"
+    echo "      원격 서버에서 05_setup_vllm.sh 를 먼저 실행하세요."
+    echo "      config는 작성하지만 실행 시 연결 오류가 발생할 수 있습니다."
+fi
+
+python3 - <<PYEOF
+import yaml, os
+
+config = {
+    "MODEL": "OpenAI",
+    "OPENAI_API_BASE":  "${APPAGENT_API_BASE}",
+    "OPENAI_API_KEY":   "local-vllm-no-key",
+    "OPENAI_API_MODEL": "${MODEL}",
+    "MAX_TOKENS":       int("${MAX_TOKENS}"),
+    "TEMPERATURE":      float("${TEMPERATURE}"),
+    "REQUEST_INTERVAL": int("${REQUEST_INTERVAL}"),
+    "DASHSCOPE_API_KEY": "sk-unused",
+    "QWEN_MODEL":        "qwen-vl-max",
+    "ANDROID_SCREENSHOT_DIR": "${ADB_SCREENSHOT_DIR}",
+    "ANDROID_XML_DIR":        "${ADB_SCREENSHOT_DIR}",
+    "DOC_REFINE":  False,
+    "MAX_ROUNDS":  int("${MAX_ROUNDS}"),
+    "DARK_MODE":   False,
+    "MIN_DIST":    30,
+    "CAUSAL_MODE": True,
+}
+
+config_path = "${CONFIG_FILE}"
+with open(config_path, "w") as f:
+    yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+print(f"   → config.yaml 작성 완료: {config_path}")
+PYEOF
+
+echo ""
+echo "   생성된 config.yaml 주요 항목:"
+python3 -c "
+import yaml
+with open('${CONFIG_FILE}') as f:
+    c = yaml.safe_load(f)
+keys = ['MODEL','OPENAI_API_BASE','OPENAI_API_MODEL','MAX_TOKENS','CAUSAL_MODE']
+for k in keys:
+    print(f'     {k}: {c.get(k, \"(없음)\")}')
+"
+
+echo "================================================================"
+echo " [4/5] Causal World Model 래퍼 설치 + task_executor.py 패치"
+echo "================================================================"
+CAUSAL_WRAPPER_SRC="${SCRIPT_DIR}/causal_wrapper.py"
+CAUSAL_WRAPPER_DST="${APPAGENT_DIR}/scripts/causal_wrapper.py"
+
+if [[ ! -f "${CAUSAL_WRAPPER_SRC}" ]]; then
+    echo "❌ causal_wrapper.py 를 찾을 수 없습니다: ${CAUSAL_WRAPPER_SRC}"
+    echo "   이 스크립트와 같은 디렉토리에 causal_wrapper.py 가 있어야 합니다."
+    exit 1
+fi
+
+cp "${CAUSAL_WRAPPER_SRC}" "${CAUSAL_WRAPPER_DST}"
+echo "   → causal_wrapper.py 복사 완료: ${CAUSAL_WRAPPER_DST}"
+
+TASK_EXECUTOR="${APPAGENT_DIR}/scripts/task_executor.py"
+PATCH_SCRIPT="${SCRIPT_DIR}/patch_task_executor.py"
+
+if [[ ! -f "${PATCH_SCRIPT}" ]]; then
+    echo "❌ patch_task_executor.py 를 찾을 수 없습니다: ${PATCH_SCRIPT}"
+    exit 1
+fi
+
+echo "   → task_executor.py 패치 적용 중..."
+python3 "${PATCH_SCRIPT}" "${TASK_EXECUTOR}"
+
+echo "================================================================"
+echo " [5/5] 환경변수 파일 생성 (.env_appagent)"
+echo "================================================================"
+ENV_FILE="${APPAGENT_DIR}/.env_appagent"
+cat > "${ENV_FILE}" <<EOF
+# source ~/AppAgent/.env_appagent
+
+export APPAGENT_VENV="${APPAGENT_VENV}"
+export APPAGENT_DIR="${APPAGENT_DIR}"
+
+export OPENAI_API_KEY="local-vllm-no-key"
+export OPENAI_BASE_URL="${VLLM_BASE_URL}"
+
+export ANDROID_HOME="\${ANDROID_HOME:-\${HOME}/.android/sdk}"
+export PATH="\${ANDROID_HOME}/platform-tools:\${PATH}"
+
+# Causal World Model 활성화 여부 (true/false)
+export CAUSAL_MODE="true"
+EOF
+echo "   → ${ENV_FILE} 생성 완료"
+
+echo ""
+echo "================================================================"
+echo " ✅ 로컬 PC 설정 완료"
+echo "================================================================"
+echo ""
+echo "  실행 방법:"
+echo ""
+echo "  1) 환경 준비:"
+echo "     source ${ENV_FILE}"
+echo "     source ${APPAGENT_VENV}/bin/activate"
+echo "     cd ${APPAGENT_DIR}"
+echo ""
+echo "  2) AppAgent 실행:"
+echo "     printf 'y\\n태스크 설명\\n' | python run.py --app <앱패키지명>"
+echo ""
+echo "  3) PoC 실험 실행:"
+echo "     cd ${SCRIPT_DIR}"
+echo "     # Control (Causal 없이)"
+echo "     CAUSAL_MODE=false python poc_experiment.py --scenario cart_add --mode control"
+echo "     # Treatment (Causal 있이)"
+echo "     CAUSAL_MODE=true  python poc_experiment.py --scenario cart_add --mode treatment"
+echo "     # 결과 비교"
+echo "     python poc_experiment.py --compare"
+echo ""
+echo "  현재 ADB 기기 목록:"
+if command -v adb &>/dev/null; then
+    adb devices 2>/dev/null | tail -n +2 | grep -v "^$" | \
+        awk '{printf "     %s\n", $0}' || echo "     (없음)"
+else
+    echo "     adb 명령어를 찾을 수 없습니다 (Android Studio / SDK 설치 필요)."
+fi
