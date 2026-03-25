@@ -160,55 +160,46 @@ echo "================================================================"
 echo " [5/5] ws-scrcpy 서버 백그라운드 실행 (포트: ${WS_SCRCPY_PORT})"
 echo "================================================================"
 
-# 포트 점유 프로세스 완전 정리 함수
-kill_port() {
-    local port="$1"
-    local pids=""
-    # ss 로 직접 PID 추출 (가장 신뢰할 수 있음)
-    pids=$(ss -tlnp 2>/dev/null | grep ":${port}[^0-9]" | grep -oP '(?<=pid=)\d+' | sort -u || true)
-    if [[ -z "${pids}" ]] && command -v lsof &>/dev/null; then
-        pids=$(lsof -t -i ":${port}" 2>/dev/null || true)
-    fi
-    if [[ -n "${pids}" ]]; then
-        echo "   → 포트 ${port} 점유 PID: ${pids} 종료"
-        kill -9 ${pids} 2>/dev/null || true
-        return 0
-    fi
-    return 1
-}
+# ws-scrcpy 관련 프로세스 전체 종료
+# /proc/*/cwd 로 dist 디렉토리에서 실행 중인 프로세스를 확실하게 탐지
+echo "   → 기존 ws-scrcpy 프로세스 정리..."
 
-# 기존 실행 중인 프로세스 정리
-# 1) PID 파일로 종료
+# 1) PID 파일
 if [[ -f "${WS_PID_FILE}" ]]; then
     OLD_PID=$(cat "${WS_PID_FILE}" 2>/dev/null || true)
     if [[ -n "${OLD_PID}" ]] && kill -0 "${OLD_PID}" 2>/dev/null; then
-        echo "   → 기존 ws-scrcpy 프로세스(PID: ${OLD_PID}) 종료"
+        echo "      PID 파일: ${OLD_PID} 종료"
         kill -9 "${OLD_PID}" 2>/dev/null || true
     fi
 fi
-# 2) 포트 점유 프로세스 강제 종료하고 해제될 때까지 대기
-echo "   → 포트 ${WS_SCRCPY_PORT} 점유 프로세스 정리..."
-kill_port "${WS_SCRCPY_PORT}" || true
-# 포트가 실제로 해제될 때까지 최대 10초 대기
-PORT_FREE=false
-for _w in $(seq 1 10); do
-    sleep 1
-    if ! ss -tlnp 2>/dev/null | grep -q ":${WS_SCRCPY_PORT}[^0-9]"; then
-        PORT_FREE=true
-        break
-    fi
-    echo "   → 포트 ${WS_SCRCPY_PORT} 아직 점유 중... (${_w}s)"
-    kill_port "${WS_SCRCPY_PORT}" || true
-done
-if [[ "${PORT_FREE}" == "false" ]]; then
-    echo "⚠️  포트 ${WS_SCRCPY_PORT} 해제 실패. 강행합니다."
+
+# 2) /proc/*/cwd 심볼릭링크로 dist 디렉토리 실행 프로세스 탐지 (가장 확실)
+CWD_PIDS=$(find /proc/[0-9]*/cwd -lname "${WS_SCRCPY_DIR}/dist" 2>/dev/null \
+    | grep -oP '(?<=/proc/)\d+' | sort -u || true)
+if [[ -n "${CWD_PIDS}" ]]; then
+    echo "      CWD 기반 PID: ${CWD_PIDS} 종료"
+    kill -9 ${CWD_PIDS} 2>/dev/null || true
 fi
 
-# ws-scrcpy 서버 실행: dist/ 디렉토리 안에서 node ./index.js
-# ※ ws-scrcpy 는 --port CLI 인자 미지원, 기본 포트 8000 사용
-nohup bash -c "cd '${WS_SCRCPY_DIR}/dist' && exec node ./index.js" \
-    > "${WS_LOG}" 2>&1 &
+# 3) 포트 점유 확인 및 대기
+PORT_IN_USE=$(ss -tlnp 2>/dev/null | awk '{print $4}' | grep -cE ":${WS_SCRCPY_PORT}$" || true)
+if [[ "${PORT_IN_USE}" -gt 0 ]]; then
+    echo "      포트 ${WS_SCRCPY_PORT} 해제 대기..."
+    for _w in $(seq 1 10); do
+        sleep 1
+        PORT_IN_USE=$(ss -tlnp 2>/dev/null | awk '{print $4}' | grep -cE ":${WS_SCRCPY_PORT}$" || true)
+        [[ "${PORT_IN_USE:-0}" -eq 0 ]] && break
+        echo "      ${_w}s 대기 중..."
+    done
+fi
+echo "   → 정리 완료. 서버 시작..."
+
+# ws-scrcpy 서버 실행: dist/ 디렉토리에서 node ./index.js
+# pushd/popd 로 CWD 변경 → /proc/*/cwd 로 다음 재실행 시 탐지 가능
+pushd "${WS_SCRCPY_DIR}/dist" > /dev/null 2>&1
+nohup node ./index.js > "${WS_LOG}" 2>&1 &
 WS_PID=$!
+popd > /dev/null 2>&1
 echo "${WS_PID}" > "${WS_PID_FILE}"
 
 # 서버 기동 확인 (최대 30초 대기)
