@@ -29,28 +29,60 @@ export PATH="${ANDROID_HOME}/platform-tools:${PATH}"
 check_node_version() {
     # ws-scrcpy 는 Node.js 16+ 필요
     local node_major
-    node_major=$(node --version | sed 's/v//' | cut -d. -f1)
+    node_major=$(node --version 2>/dev/null | sed 's/v//' | cut -d. -f1 || echo "0")
     if [[ "${node_major}" -lt 16 ]]; then
-        echo "⚠️  Node.js 버전이 낮습니다 (현재: $(node --version), 필요: v16+)"
-        echo "   nvm 을 이용해 업그레이드합니다..."
-        install_node_via_nvm
+        echo "⚠️  Node.js 버전이 낮습니다 (현재: $(node --version 2>/dev/null || echo '없음'), 필요: v16+)"
+        install_node_upgrade
     else
         echo "   Node.js 버전 OK: $(node --version)"
     fi
 }
 
-install_node_via_nvm() {
-    # nvm 설치 (sudo 불필요, 홈 디렉토리)
+install_node_upgrade() {
+    # 1단계: nvm 으로 시도 (--lts → 20 → 18 → 16 순서)
     if [[ ! -s "${HOME}/.nvm/nvm.sh" ]]; then
         echo "   → nvm 설치 중..."
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash \
+            || { echo "   ⚠ nvm 설치 실패 (네트워크 차단?)"; }
     fi
-    # shellcheck source=/dev/null
-    source "${HOME}/.nvm/nvm.sh"
-    nvm install 20
-    nvm use 20
-    nvm alias default 20
-    echo "   → Node.js $(node --version) 활성화"
+
+    if [[ -s "${HOME}/.nvm/nvm.sh" ]]; then
+        # shellcheck source=/dev/null
+        source "${HOME}/.nvm/nvm.sh"
+        for ver in "--lts" "20" "18" "16"; do
+            echo "   → nvm install ${ver} 시도..."
+            if nvm install "${ver}" 2>&1 | grep -v "^$"; then
+                nvm use "${ver}"    2>/dev/null || true
+                nvm alias default "${ver}" 2>/dev/null || true
+                echo "   → Node.js $(node --version) 활성화 (nvm)"
+                return 0
+            fi
+        done
+        echo "   ⚠ nvm 모든 버전 시도 실패"
+    fi
+
+    # 2단계: Node.js 바이너리 직접 wget 다운로드 (sudo 불필요)
+    echo "   → Node.js 바이너리 직접 다운로드..."
+    local NODE_VER="20.19.0"
+    local NODE_DIR="${HOME}/.local/node-v${NODE_VER}-linux-x64"
+    local NODE_URL="https://nodejs.org/dist/v${NODE_VER}/node-v${NODE_VER}-linux-x64.tar.xz"
+    local NODE_TAR="${HOME}/.local/node.tar.xz"
+
+    mkdir -p "${HOME}/.local"
+    if [[ ! -d "${NODE_DIR}" ]]; then
+        wget -q --show-progress -O "${NODE_TAR}" "${NODE_URL}"
+        tar -xJf "${NODE_TAR}" -C "${HOME}/.local/"
+        rm -f "${NODE_TAR}"
+    fi
+
+    export PATH="${NODE_DIR}/bin:${PATH}"
+
+    # ~/.bashrc 에 PATH 추가 (중복 방지)
+    if ! grep -q "node-v${NODE_VER}" "${HOME}/.bashrc" 2>/dev/null; then
+        echo "export PATH=\"${NODE_DIR}/bin:\${PATH}\"" >> "${HOME}/.bashrc"
+    fi
+
+    echo "   → Node.js $(node --version) 활성화 (직접 설치)"
 }
 
 # ─────────────────────────────────────────────────────────────────
