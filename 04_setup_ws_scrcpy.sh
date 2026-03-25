@@ -160,10 +160,10 @@ if [[ -f "${WS_PID_FILE}" ]]; then
     fi
 fi
 
-# ws-scrcpy 환경변수로 포트 지정
-# (프로젝트에 따라 --port 플래그를 사용하기도 함)
+# ws-scrcpy 서버 실행: dist/ 디렉토리 안에서 node ./index.js
+# (npm run script:dist:start 와 동일: cd dist && node ./index.js)
 WS_SCRCPY_PORT="${WS_SCRCPY_PORT}" \
-    nohup node dist/server/index.js \
+    nohup node "${WS_SCRCPY_DIR}/dist/index.js" \
         --port "${WS_SCRCPY_PORT}" \
         > "${WS_LOG}" 2>&1 &
 
