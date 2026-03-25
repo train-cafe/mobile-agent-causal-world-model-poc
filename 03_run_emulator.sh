@@ -131,11 +131,11 @@ echo "================================================================"
 # - KVM 있음: -accel kvm (빠름)
 # - KVM 없음: -accel tcg (소프트웨어 에뮬레이션, 느리지만 KVM 없이도 동작)
 if [[ -r /dev/kvm ]]; then
-    EMU_ACCEL_FLAGS="-accel kvm"
+    EMU_ACCEL_FLAGS="-accel on"
     echo "   KVM 사용"
 else
-    EMU_ACCEL_FLAGS="-accel tcg"
-    echo "   ※ KVM 없음 → -accel tcg 소프트웨어 에뮬레이션 (부팅까지 수십 분 소요 가능)"
+    EMU_ACCEL_FLAGS="-accel off"
+    echo "   ※ KVM 없음 → -accel off 소프트웨어 에뮬레이션 (부팅까지 수십 분 소요 가능)"
 fi
 
 "${ANDROID_HOME}/emulator/emulator" \
