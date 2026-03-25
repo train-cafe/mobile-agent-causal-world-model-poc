@@ -1,22 +1,67 @@
-# Mobile Agent (AppAgent) — Headless Ubuntu 환경 세팅
+# Mobile Agent (AppAgent) — Headless Ubuntu + Local VLM 세팅
 
-GUI 없는 Ubuntu 서버에서 Android 에뮬레이터를 띄우고,
-브라우저로 원격 접속(`ws-scrcpy`)하는 전체 과정을 자동화한 스크립트 모음입니다.
+GUI 없는 Ubuntu 서버에서 Android 에뮬레이터를 띄우고, 브라우저로 원격 접속하며,
+H100 GPU로 로컬 Vision-Language Model을 서빙해 AppAgent가 자율적으로 앱을 조작하는
+전체 환경을 자동화한 스크립트 모음입니다.
 
-## 사전 요구 사항
-
-| 항목 | 최소 사양 |
-|------|-----------|
-| OS | Ubuntu 20.04 / 22.04 / 24.04 LTS |
-| CPU | x86_64, KVM 가상화 지원 권장 (`egrep -c '(vmx\|svm)' /proc/cpuinfo > 0`) |
-| RAM | 4 GB 이상 (에뮬레이터 2 GB + 여유분) |
-| Disk | 10 GB 이상 여유 공간 |
-| 권한 | `sudo apt-get install` 가능, 그 외 sudo 불필요 |
-| 인터넷 | Google Android 서버 다운로드 가능 |
+```
+┌─────────────────────────────────────────────────────────────┐
+│  브라우저 (ws-scrcpy :8000)                                 │
+│        ↕                                                    │
+│  Android 에뮬레이터 (ADB emulator-5554)                     │
+│        ↕                                                    │
+│  AppAgent  ──→  vLLM API (:8080)  ──→  H100 x2 GPU         │
+│              Qwen3-VL-32B-Instruct                          │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ---
 
-## 실행 순서
+## 사전 요구 사항
+
+### Step 1 (에뮬레이터 환경)
+
+| 항목 | 사양 |
+|------|------|
+| OS | Ubuntu 20.04 / 22.04 / 24.04 LTS (x86_64) |
+| RAM | 8 GB 이상 |
+| Disk | 20 GB 이상 여유 공간 |
+| 권한 | `sudo apt-get install` 가능 |
+| 네트워크 | HuggingFace, GitHub, npm registry 접근 가능 |
+
+### Step 2 (VLM 서빙)
+
+| 항목 | 사양 |
+|------|------|
+| GPU | NVIDIA H100 80GB × 2 이상 (32B 모델 기준) |
+| CUDA | 12.1 이상 |
+| Python | 3.10 ~ 3.12 |
+| HF 계정 | HuggingFace 토큰 권장 (다운로드 rate limit 완화) |
+
+---
+
+## 전체 실행 순서 요약
+
+```bash
+# Step 1: Android 에뮬레이터 환경
+bash 01_install_packages.sh     # 시스템 패키지
+bash 02_setup_android_sdk.sh    # Android SDK + AVD
+bash 03_run_emulator.sh         # 헤드리스 에뮬레이터 실행
+bash 04_setup_ws_scrcpy.sh      # 브라우저 원격 화면 서버
+
+# Step 2: VLM 서빙 + AppAgent
+bash 05_setup_vllm.sh           # vLLM + Qwen3-VL-32B 서빙
+bash 06_setup_appagent.sh       # AppAgent 설치 + 로컬 VLM 연동
+
+# 통합 테스트
+source ~/AppAgent/.env_appagent
+source ~/appagent-env/bin/activate
+python test_appagent_integration.py
+```
+
+---
+
+## Step 1 — Android 에뮬레이터
 
 ### 1단계 — 필수 패키지 설치
 
@@ -24,80 +69,232 @@ GUI 없는 Ubuntu 서버에서 Android 에뮬레이터를 띄우고,
 bash 01_install_packages.sh
 ```
 
-설치되는 패키지:
-
-- `openjdk-17-jdk` — Android SDK / 에뮬레이터 실행
+설치 패키지:
+- `openjdk-17-jdk` — Android SDK / 에뮬레이터
 - `adb` — Android Debug Bridge
-- `wget`, `unzip`, `curl`, `git` — 다운로드·압축 해제
 - `nodejs`, `npm` — ws-scrcpy 빌드
-- `qemu-kvm` + 관련 패키지 — 하드웨어 가속 (KVM 지원 서버)
-- `xvfb` + OpenGL 라이브러리 — 헤드리스 렌더링
+- `qemu-kvm` + `xvfb` — 하드웨어 가속 및 헤드리스 렌더링
 
 ---
 
-### 2단계 — Android SDK & 에뮬레이터 이미지 생성
+### 2단계 — Android SDK & AVD 생성
 
 ```bash
 bash 02_setup_android_sdk.sh
 ```
 
-수행 내용:
+- `~/.android/sdk` 에 Android Command Line Tools 설치
+- `system-images;android-34;google_apis;x86_64` 다운로드
+- **Pixel 6 / API 34 / x86_64** AVD 생성
 
-1. `~/.android/sdk` 에 **Android Command Line Tools** 설치 (sudo 불필요)
-2. `sdkmanager` 로 아래 패키지 설치
-   - `platform-tools` (adb, fastboot)
-   - `emulator`
-   - `platforms;android-34` (Android 14)
-   - `system-images;android-34;google_apis;x86_64`
-3. `avdmanager` 로 **Pixel 6 / API 34** AVD 생성
-4. `config.ini` — GPU 소프트웨어 렌더링(`swiftshader_indirect`) 설정
-
-> **주의**: 이미지 다운로드 용량이 크므로 (약 1-2 GB) 네트워크 상태에 따라 시간이 걸릴 수 있습니다.
+> Google 서버 접근이 막힌 환경이라면 `02a_prepare_sdk_offline.sh` 로
+> 로컬 머신에서 번들을 만든 뒤 서버에 전송해 오프라인 설치합니다.
 
 ---
 
-### 3단계 — 에뮬레이터 헤드리스 실행
+### 3단계 — 헤드리스 에뮬레이터 실행
 
 ```bash
 bash 03_run_emulator.sh
 ```
 
-수행 내용:
-
-1. **Xvfb** 가상 디스플레이(`:99`) 시작
-2. `emulator -no-window -no-audio -no-boot-anim` 플래그로 백그라운드 실행
-3. ADB `sys.boot_completed=1` 까지 대기 (최대 300초)
-
-에뮬레이터 종료:
+1. Xvfb 가상 디스플레이(`:99`) 시작
+2. `-no-window -no-audio -accel off` 플래그로 백그라운드 실행
+3. ADB `sys.boot_completed=1` 까지 최대 900초 대기
 
 ```bash
+# 에뮬레이터 상태 확인
+adb devices
+# emulator-5554   device
+
+# 에뮬레이터 종료
 kill $(cat ~/.android/logs/emulator.pid | head -1)
 ```
 
 ---
 
-### 4단계 — ws-scrcpy 원격 화면 서버 실행
+### 4단계 — ws-scrcpy 원격 화면 서버
 
 ```bash
 bash 04_setup_ws_scrcpy.sh
 ```
 
-수행 내용:
+- Node.js 20 확인 (미충족 시 자동 설치)
+- `npm run dist` 빌드 → 포트 **8000** 백그라운드 실행
 
-1. Node.js 버전 확인 (16 미만이면 nvm 으로 v20 설치)
-2. `ws-scrcpy` 리포지토리 클론 및 `npm run build`
-3. 포트 **8000** 으로 서버 백그라운드 실행
+**브라우저 접속 (SSH 포트 포워딩 필요):**
+```bash
+# 로컬 머신에서
+ssh -L 8000:localhost:8000 <사용자>@<서버_IP>
+```
+→ 브라우저에서 `http://localhost:8000` 접속
 
-브라우저 접속:
-
+**직접 접근 가능한 경우:**
 ```
 http://<서버_IP>:8000
 ```
 
-ws-scrcpy 종료:
+연결되면 `aDevice Tracker` 화면에서 에뮬레이터가 초록 점(●)으로 표시됩니다.
+**Configure stream → Start** 클릭 시 에뮬레이터 화면이 실시간 스트리밍됩니다.
 
 ```bash
+# ws-scrcpy 종료
 kill $(cat ~/.android/logs/ws-scrcpy.pid)
+```
+
+---
+
+## Step 2 — 로컬 VLM 서빙 + AppAgent
+
+### 5단계 — vLLM 서버 실행 (H100 x2)
+
+```bash
+# HuggingFace 토큰 설정 (다운로드 rate limit 완화, 권장)
+export HF_TOKEN="hf_xxxxxxxxxxxx"
+
+bash 05_setup_vllm.sh
+```
+
+수행 내용:
+1. `~/vllm-env` Python venv 생성 + vLLM 설치
+2. `Qwen/Qwen3-VL-32B-Instruct` 모델 사전 다운로드 (~65 GB)
+3. GPU 0,1 전용으로 **포트 8080**, `tensor-parallel-size=2` 실행
+4. `/health` 엔드포인트 폴링으로 준비 완료 자동 확인
+
+```bash
+# 서버 상태 수동 확인
+curl http://localhost:8080/health && echo "OK"
+
+# 서빙 중인 모델 확인
+curl -s http://localhost:8080/v1/models | python3 -m json.tool
+
+# 로그 스트리밍
+tail -f ~/.vllm/logs/vllm-server.log
+
+# tmux 세션 확인
+tmux attach -t vllm-server
+```
+
+**환경변수로 동작 커스터마이징:**
+```bash
+MODEL="Qwen/Qwen3-VL-32B-Instruct" \
+TENSOR_PARALLEL=2 \
+CUDA_VISIBLE_DEVICES=0,1 \
+MAX_MODEL_LEN=32768 \
+GPU_MEM_UTIL=0.90 \
+bash 05_setup_vllm.sh
+```
+
+**vLLM API 직접 테스트:**
+```bash
+curl -s http://localhost:8080/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer local-key" \
+  -d '{
+    "model": "Qwen/Qwen3-VL-32B-Instruct",
+    "messages": [{"role":"user","content":"Hello, are you ready?"}],
+    "max_tokens": 64
+  }' | python3 -m json.tool
+```
+
+---
+
+### 6단계 — AppAgent 설치 및 로컬 VLM 연동
+
+```bash
+bash 06_setup_appagent.sh
+```
+
+수행 내용:
+1. `~/AppAgent` 클론 + `~/appagent-env` venv 의존성 설치
+2. `config.yaml` 을 로컬 vLLM 엔드포인트로 자동 패치
+3. `~/.env_appagent` 환경변수 파일 생성
+
+**생성되는 `config.yaml` 핵심 설정:**
+```yaml
+MODEL: "OpenAI"
+OPENAI_API_BASE: "http://localhost:8080/v1/chat/completions"
+OPENAI_API_KEY: "local-vllm-no-key"
+OPENAI_API_MODEL: "Qwen/Qwen3-VL-32B-Instruct"
+MAX_TOKENS: 1024
+TEMPERATURE: 0.0
+REQUEST_INTERVAL: 3
+MAX_ROUNDS: 20
+```
+
+---
+
+### 통합 테스트
+
+```bash
+source ~/AppAgent/.env_appagent
+source ~/appagent-env/bin/activate
+python test_appagent_integration.py
+```
+
+테스트 항목:
+1. vLLM 서버 헬스체크
+2. 텍스트 API 응답 확인
+3. ADB 기기 연결 확인
+4. 스크린샷 캡처 → Vision API 전달 (실제 VLM 추론)
+5. AppAgent `config.yaml` 검증
+6. ADB 설정 앱 열기 제어
+
+**모두 통과 시 출력:**
+```
+✅ PASS  vLLM 서버 헬스체크
+✅ PASS  vLLM 텍스트 API
+✅ PASS  ADB 기기 연결
+✅ PASS  Vision API (스크린샷)
+✅ PASS  AppAgent config.yaml
+✅ PASS  ADB 제어 (앱 열기)
+
+🎉 모든 테스트 통과! AppAgent + 로컬 vLLM 연동 준비 완료.
+```
+
+---
+
+### AppAgent 실행 예시
+
+**환경 준비:**
+```bash
+source ~/AppAgent/.env_appagent
+source ~/appagent-env/bin/activate
+cd ~/AppAgent
+```
+
+**기본 태스크 실행 (run 모드):**
+```bash
+# 설정 앱에서 WiFi 화면으로 이동
+python run.py \
+  --app com.android.settings \
+  --task "설정에서 WiFi 메뉴로 이동해줘" \
+  --series wifi_test
+
+# Chrome으로 특정 URL 열기
+python run.py \
+  --app com.android.chrome \
+  --task "구글에서 'vLLM 사용법'을 검색해줘" \
+  --series search_test
+```
+
+**탐색(learn) 모드 — 앱 사용법 문서 자동 생성:**
+```bash
+python learn.py \
+  --app com.android.settings \
+  --demo settings_demo
+```
+
+**ADB로 현재 에뮬레이터 화면 확인:**
+```bash
+# 스크린샷 저장
+adb exec-out screencap -p > ~/screen.png
+
+# 현재 포커스된 앱 확인
+adb shell dumpsys window windows | grep mCurrentFocus
+
+# 앱 패키지 목록
+adb shell pm list packages | grep -v "package:com.google\|package:com.android" | head -20
 ```
 
 ---
@@ -106,63 +303,104 @@ kill $(cat ~/.android/logs/ws-scrcpy.pid)
 
 ```
 .
-├── 01_install_packages.sh   # apt-get 패키지 설치
-├── 02_setup_android_sdk.sh  # Android SDK + AVD 생성
-├── 03_run_emulator.sh       # 헤드리스 에뮬레이터 실행
-├── 04_setup_ws_scrcpy.sh    # ws-scrcpy 원격 화면
+├── 01_install_packages.sh        # apt-get 패키지 설치
+├── 02_setup_android_sdk.sh       # Android SDK + AVD 생성
+├── 02a_prepare_sdk_offline.sh    # 방화벽 환경용 오프라인 번들 준비 (로컬 실행)
+├── 03_run_emulator.sh            # 헤드리스 에뮬레이터 실행
+├── 04_setup_ws_scrcpy.sh         # ws-scrcpy 원격 화면 서버 (포트 8000)
+├── 05_setup_vllm.sh              # vLLM + Qwen3-VL-32B 서빙 (포트 8080)
+├── 06_setup_appagent.sh          # AppAgent 클론 + 로컬 VLM 연동
+├── test_appagent_integration.py  # VLM + ADB 통합 테스트
 └── README.md
 ```
 
-로그 파일 위치:
-
+**로그 파일:**
 ```
 ~/.android/logs/
-├── xvfb.log        # Xvfb 가상 디스플레이
-├── emulator.log    # Android 에뮬레이터
-├── emulator.pid    # 에뮬레이터 PID
-├── ws-scrcpy.log   # ws-scrcpy 서버
-└── ws-scrcpy.pid   # ws-scrcpy PID
+├── xvfb.log          # Xvfb 가상 디스플레이
+├── emulator.log      # Android 에뮬레이터
+├── emulator.pid      # 에뮬레이터 PID
+├── ws-scrcpy.log     # ws-scrcpy 서버
+└── ws-scrcpy.pid     # ws-scrcpy PID
+
+~/.vllm/logs/
+├── vllm-server.log   # vLLM 서버 로그
+└── vllm-server.pid   # vLLM PID
 ```
+
+---
+
+## 포트 사용 현황
+
+| 포트 | 서비스 | 설명 |
+|------|--------|------|
+| 5554/5555 | Android 에뮬레이터 | ADB 연결 |
+| 8000 | ws-scrcpy | 브라우저 원격 화면 |
+| 8080 | vLLM | OpenAI 호환 API |
 
 ---
 
 ## 트러블슈팅
 
-### KVM 없이 실행 시 속도가 느린 경우
-
-CPU가 KVM을 지원하지 않거나 권한이 없으면 에뮬레이터가 순수 소프트웨어 에뮬레이션으로 동작합니다.
-`03_run_emulator.sh` 내 `-memory` 값을 줄이거나 API Level을 낮춰보세요.
+### KVM 없이 에뮬레이터가 느린 경우
 
 ```bash
 # KVM 사용 가능 여부 확인
-ls -la /dev/kvm 2>/dev/null && echo "KVM 사용 가능" || echo "KVM 없음"
+ls -la /dev/kvm 2>/dev/null && echo "KVM 사용 가능" || echo "KVM 없음 (소프트웨어 에뮬레이션)"
 ```
 
-### `sdkmanager: command not found`
+KVM 없으면 x86_64 소프트웨어 에뮬레이션으로 동작합니다. 부팅에 10~20분 소요될 수 있습니다.
 
-02 스크립트를 다시 실행하거나 아래를 현재 터미널에 직접 입력하세요.
+### ws-scrcpy 브라우저 접속 불가 (내부 IP)
+
+클라우드/쿠버네티스 환경에서는 SSH 포트 포워딩이 필요합니다:
+```bash
+# 로컬 터미널에서 실행
+ssh -L 8000:localhost:8000 -L 8080:localhost:8080 <사용자>@<서버_호스트명>
+```
+→ `http://localhost:8000` 및 `http://localhost:8080`으로 접속
+
+### vLLM 429 Too Many Requests (HuggingFace)
 
 ```bash
-source ~/.bashrc
+# HF 토큰으로 rate limit 우회
+export HF_TOKEN="hf_xxxx"
+bash 05_setup_vllm.sh
+
+# 또는 huggingface-cli로 수동 다운로드
+source ~/vllm-env/bin/activate
+huggingface-cli download Qwen/Qwen3-VL-32B-Instruct \
+    --exclude "*.pt" "original/*"
 ```
 
-### ws-scrcpy 빌드 오류 (Node.js 버전)
+### vLLM 엔진 초기화 실패
 
 ```bash
-# nvm 으로 Node.js 20 수동 설치
-source ~/.nvm/nvm.sh
-nvm install 20 && nvm use 20
-cd ~/ws-scrcpy && npm install && npm run build
+# 로그 확인
+head -80 ~/.vllm/logs/vllm-server.log
+tail -40 ~/.vllm/logs/vllm-server.log
+
+# CUDA/GPU 상태 확인
+nvidia-smi
+nvidia-smi topo -m   # NVLink 연결 확인
+
+# GPU 메모리 부족 시 컨텍스트 길이 줄이기
+MAX_MODEL_LEN=8192 bash 05_setup_vllm.sh
 ```
 
-### 포트 8000 방화벽
+### AppAgent config 재설정
 
-클라우드 서버(AWS, GCP 등)를 사용한다면 보안 그룹/방화벽에서 TCP **8000** 인바운드를 허용해야 합니다.
+```bash
+# vLLM 서버 재시작 후 모델명이 바뀐 경우
+bash 06_setup_appagent.sh
+```
 
 ---
 
 ## 참고 링크
 
 - [ws-scrcpy GitHub](https://github.com/NetrisTV/ws-scrcpy)
-- [Android Studio Emulator — 헤드리스 가이드](https://developer.android.com/studio/run/emulator-commandline)
 - [AppAgent GitHub](https://github.com/mnotgod96/AppAgent)
+- [vLLM 공식 문서](https://docs.vllm.ai)
+- [Qwen3-VL HuggingFace](https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct)
+- [Android Emulator CLI 가이드](https://developer.android.com/studio/run/emulator-commandline)
