@@ -160,7 +160,8 @@ echo "================================================================"
 echo " [5/5] ws-scrcpy 서버 백그라운드 실행 (포트: ${WS_SCRCPY_PORT})"
 echo "================================================================"
 
-# 기존 실행 중인 프로세스 정리 (PID 파일 + 포트 점유 프로세스 모두 종료)
+# 기존 실행 중인 프로세스 정리
+# 1) PID 파일로 종료
 if [[ -f "${WS_PID_FILE}" ]]; then
     OLD_PID=$(cat "${WS_PID_FILE}" 2>/dev/null || true)
     if [[ -n "${OLD_PID}" ]] && kill -0 "${OLD_PID}" 2>/dev/null; then
@@ -168,26 +169,29 @@ if [[ -f "${WS_PID_FILE}" ]]; then
         kill "${OLD_PID}" 2>/dev/null || true
     fi
 fi
-# 포트를 점유한 프로세스도 강제 종료 (EADDRINUSE 방지)
-PORT_PIDS=$(ss -tlnp 2>/dev/null | grep ":${WS_SCRCPY_PORT} " | grep -oP 'pid=\K[0-9]+' || true)
-if [[ -z "${PORT_PIDS}" ]]; then
-    PORT_PIDS=$(fuser "${WS_SCRCPY_PORT}/tcp" 2>/dev/null || true)
-fi
-if [[ -n "${PORT_PIDS}" ]]; then
-    echo "   → 포트 ${WS_SCRCPY_PORT} 점유 프로세스(${PORT_PIDS}) 강제 종료"
-    kill ${PORT_PIDS} 2>/dev/null || true
+# 2) 포트 점유 프로세스 강제 종료 (EADDRINUSE 방지)
+echo "   → 포트 ${WS_SCRCPY_PORT} 점유 프로세스 정리..."
+# fuser -k 가 가장 확실; 없으면 lsof, 없으면 ss fallback
+if command -v fuser &>/dev/null; then
+    fuser -k "${WS_SCRCPY_PORT}/tcp" 2>/dev/null || true
+elif command -v lsof &>/dev/null; then
+    PORT_PIDS=$(lsof -t -i ":${WS_SCRCPY_PORT}" 2>/dev/null || true)
+    [[ -n "${PORT_PIDS}" ]] && kill ${PORT_PIDS} 2>/dev/null || true
+else
+    # ss 출력에서 pid= 파싱 (형식: users:(("node",pid=1234,...)))
+    PORT_PIDS=$(ss -tlnp 2>/dev/null \
+        | grep ":${WS_SCRCPY_PORT}[^0-9]" \
+        | grep -oP '(?<=pid=)\d+' || true)
+    [[ -n "${PORT_PIDS}" ]] && kill ${PORT_PIDS} 2>/dev/null || true
 fi
 sleep 2
 
 # ws-scrcpy 서버 실행: dist/ 디렉토리 안에서 node ./index.js
-# (npm run script:dist:start 와 동일: cd dist && node ./index.js)
 # ※ ws-scrcpy 는 --port CLI 인자 미지원, 기본 포트 8000 사용
-#   포트 변경이 필요하면 WS_SCRCPY_CONFIG 환경변수로 YAML 설정파일 지정
-(cd "${WS_SCRCPY_DIR}/dist" && nohup node ./index.js \
+nohup bash -c "cd '${WS_SCRCPY_DIR}/dist' && exec node ./index.js" \
     > "${WS_LOG}" 2>&1 &
-echo $! > "${WS_PID_FILE}")
-
-WS_PID=$(cat "${WS_PID_FILE}")
+WS_PID=$!
+echo "${WS_PID}" > "${WS_PID_FILE}"
 
 # 서버 기동 확인 (최대 30초 대기)
 echo "   서버 기동 대기 중..."
