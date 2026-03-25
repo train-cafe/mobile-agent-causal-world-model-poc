@@ -104,6 +104,8 @@ LOG_FLAG=$(
 )
 
 # tmux 세션이 있으면 tmux, 없으면 nohup으로 실행
+# --enforce-eager: CUDA 그래프 비활성화 (초기화 실패 방지)
+# --max-num-seqs: 동시 시퀀스 수 제한 (메모리 안정성)
 VLLM_CMD="CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} \
     ${VENV_DIR}/bin/python -m vllm.entrypoints.openai.api_server \
     --model \"${MODEL}\" \
@@ -115,6 +117,8 @@ VLLM_CMD="CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} \
     --max-model-len ${MAX_MODEL_LEN} \
     --gpu-memory-utilization ${GPU_MEM_UTIL} \
     --dtype auto \
+    --enforce-eager \
+    --max-num-seqs 16 \
     ${LOG_FLAG}"
 
 if command -v tmux &>/dev/null; then
@@ -155,8 +159,11 @@ for i in $(seq 1 60); do
     fi
     # 프로세스 사망 여부 확인
     if [[ -n "${VLLM_PID:-}" ]] && ! kill -0 "${VLLM_PID}" 2>/dev/null; then
-        echo "❌ vLLM 서버 프로세스가 종료됐습니다. 로그 확인:"
-        tail -30 "${VLLM_LOG}"
+        echo "❌ vLLM 서버 프로세스가 종료됐습니다."
+        echo "   ── 로그 앞부분 (root cause) ──"
+        head -60 "${VLLM_LOG}"
+        echo "   ── 로그 끝부분 ──"
+        tail -40 "${VLLM_LOG}"
         exit 1
     fi
     printf "   %ds...\r" "$((i * 5))"
