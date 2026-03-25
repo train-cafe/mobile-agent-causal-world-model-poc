@@ -2,7 +2,8 @@
 # =============================================================================
 # 05_setup_vllm.sh
 # H100 x2 에서 vLLM OpenAI-compatible 서버 실행
-# - Qwen/Qwen2-VL-7B-Instruct (기본) 또는 72B (주석 해제)
+# - Qwen/Qwen3-VL-32B-Instruct (기본)
+# - GPU 0,1 전용 (GPU 2,3은 에뮬레이터 등이 점유 중)
 # - tensor-parallel-size=2, 포트 8080 (ws-scrcpy 8000과 충돌 방지)
 # =============================================================================
 set -euo pipefail
@@ -13,11 +14,13 @@ VLLM_PORT="${VLLM_PORT:-8080}"
 VLLM_HOST="${VLLM_HOST:-0.0.0.0}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
 GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
 
-# 모델 선택: 7B (기본) / 72B (H100 2x 160GB VRAM 충분)
-MODEL="${MODEL:-Qwen/Qwen2-VL-7B-Instruct}"
-# MODEL="Qwen/Qwen2-VL-72B-Instruct"  # 72B: fp8/AWQ 권장
+# GPU 0,1만 사용 (GPU 2,3은 이미 점유됨)
+CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
+
+# 모델: Qwen3-VL-32B (H100 2x 160GB VRAM으로 충분)
+MODEL="${MODEL:-Qwen/Qwen3-VL-32B-Instruct}"
 
 LOG_DIR="${HOME}/.vllm/logs"
 VLLM_LOG="${LOG_DIR}/vllm-server.log"
@@ -92,8 +95,17 @@ CWD_PIDS=$(find /proc/[0-9]*/cwd -lname "${VENV_DIR}*" 2>/dev/null \
     | grep -oP '(?<=/proc/)\d+' | sort -u || true)
 [[ -n "${CWD_PIDS}" ]] && kill -9 ${CWD_PIDS} 2>/dev/null || true
 
+# vLLM 버전에 따라 --no-enable-log-requests 또는 --disable-log-requests 사용
+LOG_FLAG=$(
+    "${VENV_DIR}/bin/python" -m vllm.entrypoints.openai.api_server --help 2>&1 \
+    | grep -q "no-enable-log-requests" \
+    && echo "--no-enable-log-requests" \
+    || echo ""
+)
+
 # tmux 세션이 있으면 tmux, 없으면 nohup으로 실행
-VLLM_CMD="${VENV_DIR}/bin/python -m vllm.entrypoints.openai.api_server \
+VLLM_CMD="CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} \
+    ${VENV_DIR}/bin/python -m vllm.entrypoints.openai.api_server \
     --model \"${MODEL}\" \
     --tensor-parallel-size ${TENSOR_PARALLEL} \
     --host ${VLLM_HOST} \
@@ -103,10 +115,11 @@ VLLM_CMD="${VENV_DIR}/bin/python -m vllm.entrypoints.openai.api_server \
     --max-model-len ${MAX_MODEL_LEN} \
     --gpu-memory-utilization ${GPU_MEM_UTIL} \
     --dtype auto \
-    --disable-log-requests"
+    ${LOG_FLAG}"
 
 if command -v tmux &>/dev/null; then
     echo "   → tmux 세션 'vllm-server' 로 실행"
+    echo "   → CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES} (GPU 0,1 사용)"
     tmux kill-session -t vllm-server 2>/dev/null || true
     tmux new-session -d -s vllm-server \
         "source ${VENV_DIR}/bin/activate && ${VLLM_CMD} 2>&1 | tee ${VLLM_LOG}"
