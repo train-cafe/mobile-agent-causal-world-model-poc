@@ -160,31 +160,49 @@ echo "================================================================"
 echo " [5/5] ws-scrcpy 서버 백그라운드 실행 (포트: ${WS_SCRCPY_PORT})"
 echo "================================================================"
 
+# 포트 점유 프로세스 완전 정리 함수
+kill_port() {
+    local port="$1"
+    local pids=""
+    # ss 로 직접 PID 추출 (가장 신뢰할 수 있음)
+    pids=$(ss -tlnp 2>/dev/null | grep ":${port}[^0-9]" | grep -oP '(?<=pid=)\d+' | sort -u || true)
+    if [[ -z "${pids}" ]] && command -v lsof &>/dev/null; then
+        pids=$(lsof -t -i ":${port}" 2>/dev/null || true)
+    fi
+    if [[ -n "${pids}" ]]; then
+        echo "   → 포트 ${port} 점유 PID: ${pids} 종료"
+        kill -9 ${pids} 2>/dev/null || true
+        return 0
+    fi
+    return 1
+}
+
 # 기존 실행 중인 프로세스 정리
 # 1) PID 파일로 종료
 if [[ -f "${WS_PID_FILE}" ]]; then
     OLD_PID=$(cat "${WS_PID_FILE}" 2>/dev/null || true)
     if [[ -n "${OLD_PID}" ]] && kill -0 "${OLD_PID}" 2>/dev/null; then
         echo "   → 기존 ws-scrcpy 프로세스(PID: ${OLD_PID}) 종료"
-        kill "${OLD_PID}" 2>/dev/null || true
+        kill -9 "${OLD_PID}" 2>/dev/null || true
     fi
 fi
-# 2) 포트 점유 프로세스 강제 종료 (EADDRINUSE 방지)
+# 2) 포트 점유 프로세스 강제 종료하고 해제될 때까지 대기
 echo "   → 포트 ${WS_SCRCPY_PORT} 점유 프로세스 정리..."
-# fuser -k 가 가장 확실; 없으면 lsof, 없으면 ss fallback
-if command -v fuser &>/dev/null; then
-    fuser -k "${WS_SCRCPY_PORT}/tcp" 2>/dev/null || true
-elif command -v lsof &>/dev/null; then
-    PORT_PIDS=$(lsof -t -i ":${WS_SCRCPY_PORT}" 2>/dev/null || true)
-    [[ -n "${PORT_PIDS}" ]] && kill ${PORT_PIDS} 2>/dev/null || true
-else
-    # ss 출력에서 pid= 파싱 (형식: users:(("node",pid=1234,...)))
-    PORT_PIDS=$(ss -tlnp 2>/dev/null \
-        | grep ":${WS_SCRCPY_PORT}[^0-9]" \
-        | grep -oP '(?<=pid=)\d+' || true)
-    [[ -n "${PORT_PIDS}" ]] && kill ${PORT_PIDS} 2>/dev/null || true
+kill_port "${WS_SCRCPY_PORT}" || true
+# 포트가 실제로 해제될 때까지 최대 10초 대기
+PORT_FREE=false
+for _w in $(seq 1 10); do
+    sleep 1
+    if ! ss -tlnp 2>/dev/null | grep -q ":${WS_SCRCPY_PORT}[^0-9]"; then
+        PORT_FREE=true
+        break
+    fi
+    echo "   → 포트 ${WS_SCRCPY_PORT} 아직 점유 중... (${_w}s)"
+    kill_port "${WS_SCRCPY_PORT}" || true
+done
+if [[ "${PORT_FREE}" == "false" ]]; then
+    echo "⚠️  포트 ${WS_SCRCPY_PORT} 해제 실패. 강행합니다."
 fi
-sleep 2
 
 # ws-scrcpy 서버 실행: dist/ 디렉토리 안에서 node ./index.js
 # ※ ws-scrcpy 는 --port CLI 인자 미지원, 기본 포트 8000 사용
