@@ -263,26 +263,37 @@ source ~/appagent-env/bin/activate
 cd ~/AppAgent
 ```
 
-**기본 태스크 실행 (run 모드):**
+**태스크 실행 (run 모드) — 대화형 입력:**
 ```bash
-# 설정 앱에서 WiFi 화면으로 이동
-python run.py \
-  --app com.android.settings \
-  --task "설정에서 WiFi 메뉴로 이동해줘" \
-  --series wifi_test
+python run.py --app com.android.settings
+```
 
-# Chrome으로 특정 URL 열기
-python run.py \
-  --app com.android.chrome \
-  --task "구글에서 'vLLM 사용법'을 검색해줘" \
-  --series search_test
+실행 후 아래 프롬프트에 순서대로 답합니다:
+```
+# 문서가 없을 경우 (처음 실행 시)
+No documentations found ... Do you want to proceed with no docs? Enter y or n
+→ y  ← 입력
+
+# 기기가 여러 개일 경우 (에뮬레이터 1개면 자동 선택)
+Device selected: emulator-5554
+
+# 태스크 설명 입력
+Please enter the description of the task...
+→ 설정에서 WiFi 메뉴로 이동해줘  ← 입력
+```
+
+**입력을 파이프로 자동화 (비대화형 실행):**
+```bash
+# 문서 없이 태스크 실행 (y = no-doc 허용, 태스크 설명 순서)
+printf 'y\n설정에서 WiFi 메뉴로 이동해줘\n' | python run.py --app com.android.settings
+
+# Chrome으로 검색
+printf 'y\n구글에서 vLLM 사용법을 검색해줘\n' | python run.py --app com.android.chrome
 ```
 
 **탐색(learn) 모드 — 앱 사용법 문서 자동 생성:**
 ```bash
-python learn.py \
-  --app com.android.settings \
-  --demo settings_demo
+python learn.py --app com.android.settings
 ```
 
 **ADB로 현재 에뮬레이터 화면 확인:**

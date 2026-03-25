@@ -66,6 +66,11 @@ pip install -q \
     lxml \
     uiautomator2
 
+# 선택적 패키지 (없어도 동작하나 'Warning! No module named X' 경고 제거)
+pip install -q matplotlib 2>/dev/null || true
+# sounddevice 는 libportaudio2 시스템 라이브러리 필요 → 실패해도 무시
+pip install -q sounddevice 2>/dev/null || true
+
 echo "   → 의존성 설치 완료"
 
 echo "================================================================"
