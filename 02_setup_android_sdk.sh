@@ -96,73 +96,132 @@ fi
 
 # ─────────────────────────────────────────────────────────────────
 echo "================================================================"
-echo " [4/5] SDK 패키지 설치 (sdkmanager)"
-echo "       - platform-tools, emulator, system-image"
-echo "   ※ 라이선스 수락 및 다운로드 중... (수 분 소요, 커서 깜빡임 정상)"
+echo " [4/5] SDK 패키지 설치"
 echo "================================================================"
 
-# 라이선스 자동 수락
-# yes | 방식은 JVM stdin 처리 문제로 hang 발생 → printf + 파이프 방식으로 대체
-# sdkmanager 는 라이선스마다 'y\n' 을 요구 → 충분한 수(30개)를 미리 넣어줌
-printf 'y\n%.0s' {1..30} | sdkmanager --licenses 2>&1 \
-    | grep -v "^$" | grep -v "^---" || \
-printf 'y\n%.0s' {1..30} | sdkmanager --no_https --licenses 2>&1 \
-    | grep -v "^$" | grep -v "^---" || true
-echo "   → 라이선스 수락 완료"
+BUNDLE_FILE="${HOME}/.android/android-sdk-bundle.tar.gz"
 
-# SDK 패키지별 설치 + 설치 후 바이너리 존재 검증
-# ※ | tail 파이프 금지: sdkmanager 실패 exit code가 파이프에 묻혀 무시됨
+if [[ -f "${BUNDLE_FILE}" ]]; then
+    # ── 오프라인 경로 ─────────────────────────────────────────────
+    echo "   → 오프라인 번들 발견: ${BUNDLE_FILE}"
+    echo "   → 번들 크기: $(du -sh "${BUNDLE_FILE}" | cut -f1)"
+    echo "   → 추출 중... (수 분 소요)"
 
-sdk_install() {
-    local pkg="$1"
-    local check_path="${2:-}"
-    local sdklog="${LOG_DIR}/sdkmanager.log"
-    echo "   → [설치] ${pkg}"
+    mkdir -p "${LOG_DIR}"
+    tar -xzf "${BUNDLE_FILE}" -C "${HOME}/.android/" 2>&1 \
+        | tee -a "${LOG_DIR}/bundle_extract.log"
 
-    # 1차 시도: 기본 HTTPS
-    # PIPESTATUS 로 파이프 왼쪽(sdkmanager)의 exit code만 추출
-    set +e
-    sdkmanager --verbose "${pkg}" 2>&1 | tee -a "${sdklog}"
-    local rc="${PIPESTATUS[0]}"
-    set -e
+    echo "   → 추출 완료"
 
-    # 실패하거나 파일이 없으면 --no_https 로 재시도
-    if [[ "${rc}" -ne 0 ]] || [[ -n "${check_path}" && ! -e "${check_path}" ]]; then
-        echo "   ⚠ HTTPS 시도 실패(rc=${rc}). --no_https 로 재시도..."
+    # 추출 후 바이너리 검증
+    CHECKS=(
+        "${ANDROID_HOME}/platform-tools/adb:adb"
+        "${ANDROID_HOME}/emulator/emulator:emulator"
+        "${ANDROID_HOME}/system-images/android-${API_LEVEL}/google_apis/${ABI}/system.img:system.img"
+    )
+    INSTALL_OK=true
+    for entry in "${CHECKS[@]}"; do
+        local_path="${entry%%:*}"
+        label="${entry##*:}"
+        if [[ -e "${local_path}" ]]; then
+            echo "   ✓ ${label}"
+        else
+            echo "   ✗ 없음: ${local_path}"
+            INSTALL_OK=false
+        fi
+    done
+
+    if [[ "${INSTALL_OK}" == "false" ]]; then
+        echo "❌ 번들 추출 후 일부 파일이 없습니다."
+        echo "   → 번들이 올바르게 생성되었는지 확인하세요:"
+        echo "     로컬 머신에서: bash 02a_prepare_sdk_offline.sh"
+        exit 1
+    fi
+
+    # 공간 절약을 위해 번들 삭제 여부 선택
+    echo ""
+    echo "   번들 파일을 삭제하시겠습니까? (공간 절약)"
+    echo "   삭제하려면 y, 유지하려면 다른 키를 누르세요 [y/N]"
+    read -r -t 10 REMOVE_BUNDLE || REMOVE_BUNDLE="n"
+    if [[ "${REMOVE_BUNDLE,,}" == "y" ]]; then
+        rm -f "${BUNDLE_FILE}"
+        echo "   → 번들 삭제 완료"
+    else
+        echo "   → 번들 유지: ${BUNDLE_FILE}"
+    fi
+
+else
+    # ── 온라인 경로 (sdkmanager) ──────────────────────────────────
+    echo "   ※ 라이선스 수락 및 다운로드 중... (수 분 소요, 커서 깜빡임 정상)"
+
+    printf 'y\n%.0s' {1..30} | sdkmanager --licenses 2>&1 \
+        | grep -v "^$" | grep -v "^---" || \
+    printf 'y\n%.0s' {1..30} | sdkmanager --no_https --licenses 2>&1 \
+        | grep -v "^$" | grep -v "^---" || true
+    echo "   → 라이선스 수락 완료"
+
+    sdk_install() {
+        local pkg="$1"
+        local check_path="${2:-}"
+        local sdklog="${LOG_DIR}/sdkmanager.log"
+        echo "   → [설치] ${pkg}"
+
         set +e
-        sdkmanager --verbose --no_https "${pkg}" 2>&1 | tee -a "${sdklog}"
-        rc="${PIPESTATUS[0]}"
+        sdkmanager --verbose "${pkg}" 2>&1 | tee -a "${sdklog}"
+        local rc="${PIPESTATUS[0]}"
         set -e
-    fi
 
-    if [[ "${rc}" -ne 0 ]]; then
-        echo "❌ sdkmanager 실패 (exit ${rc}): ${pkg}"
-        echo "   로그: ${sdklog}"
-        exit 1
-    fi
+        if [[ "${rc}" -ne 0 ]] || [[ -n "${check_path}" && ! -e "${check_path}" ]]; then
+            echo "   ⚠ HTTPS 시도 실패(rc=${rc}). --no_https 로 재시도..."
+            set +e
+            sdkmanager --verbose --no_https "${pkg}" 2>&1 | tee -a "${sdklog}"
+            rc="${PIPESTATUS[0]}"
+            set -e
+        fi
 
-    if [[ -n "${check_path}" && ! -e "${check_path}" ]]; then
-        echo "❌ 설치 후 파일이 없습니다: ${check_path}"
-        echo "   로그: ${sdklog}"
-        exit 1
-    fi
-    echo "   → [완료] ${pkg}"
-}
+        if [[ "${rc}" -ne 0 ]]; then
+            echo ""
+            echo "❌ sdkmanager 로 패키지를 설치할 수 없습니다: ${pkg}"
+            echo "   원인: dl.google.com 에 대한 네트워크 접근이 차단된 것으로 보입니다."
+            echo ""
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            echo "  해결 방법: 오프라인 번들 사용"
+            echo ""
+            echo "  1. 인터넷이 되는 로컬 머신(Mac/Linux)에서 실행:"
+            echo "     bash 02a_prepare_sdk_offline.sh"
+            echo ""
+            echo "  2. 생성된 번들을 이 서버로 전송:"
+            echo "     scp ~/android-sdk-bundle.tar.gz <사용자>@<서버IP>:~/.android/"
+            echo ""
+            echo "  3. 이 스크립트를 다시 실행:"
+            echo "     bash 02_setup_android_sdk.sh"
+            echo "     (번들 파일을 자동 감지하여 오프라인 설치합니다)"
+            echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            exit 1
+        fi
 
-mkdir -p "${LOG_DIR}"
+        if [[ -n "${check_path}" && ! -e "${check_path}" ]]; then
+            echo "❌ 설치 후 파일이 없습니다: ${check_path}"
+            exit 1
+        fi
+        echo "   → [완료] ${pkg}"
+    }
 
-sdk_install "platform-tools" \
-    "${ANDROID_HOME}/platform-tools/adb"
+    mkdir -p "${LOG_DIR}"
 
-sdk_install "emulator" \
-    "${ANDROID_HOME}/emulator/emulator"
+    sdk_install "platform-tools" \
+        "${ANDROID_HOME}/platform-tools/adb"
 
-sdk_install "platforms;android-${API_LEVEL}" \
-    "${ANDROID_HOME}/platforms/android-${API_LEVEL}"
+    sdk_install "emulator" \
+        "${ANDROID_HOME}/emulator/emulator"
 
-echo "   → system-image 설치 중... (가장 오래 걸림, ~1-2 GB)"
-sdk_install "${SYS_IMAGE}" \
-    "${ANDROID_HOME}/system-images/android-${API_LEVEL}/google_apis/${ABI}/system.img"
+    sdk_install "platforms;android-${API_LEVEL}" \
+        "${ANDROID_HOME}/platforms/android-${API_LEVEL}"
+
+    echo "   → system-image 설치 중... (가장 오래 걸림, ~1-2 GB)"
+    sdk_install "${SYS_IMAGE}" \
+        "${ANDROID_HOME}/system-images/android-${API_LEVEL}/google_apis/${ABI}/system.img"
+fi
 
 echo "   → SDK 설치 완료"
 
