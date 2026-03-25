@@ -189,7 +189,7 @@ wget_install_sysimg() {
         "${SDK_DIR}/system-images/android-${API_LEVEL}/google_apis/${ABI}"
 }
 
-# sdkmanager 시도 → 실패 시 wget 폴백
+# sdkmanager 시도(타임아웃 30초) → 실패 시 wget 폴백
 install_package() {
     local label="$1"       # 로그 표시용
     local sdkpkg="$2"      # sdkmanager 패키지 이름
@@ -204,10 +204,10 @@ install_package() {
     echo ""
     echo "── ${label} ──────────────────────────────────────"
 
-    # sdkmanager 시도
-    echo "   [시도 1] sdkmanager"
+    # sdkmanager 시도 — 30초 타임아웃 (네트워크 차단 시 빠르게 실패)
+    echo "   [시도 1] sdkmanager (타임아웃 30초)..."
     set +e
-    sdkmanager --sdk_root="${SDK_DIR}" "${sdkpkg}" 2>&1 | \
+    timeout 30 sdkmanager --sdk_root="${SDK_DIR}" "${sdkpkg}" 2>&1 | \
         grep -v "^Warning" | grep -v "^Info: IO" | grep -v "^$" || true
     set -e
 
@@ -217,7 +217,7 @@ install_package() {
     fi
 
     # wget 폴백
-    echo "   [시도 2] wget 직접 다운로드 (sdkmanager 네트워크 차단으로 실패)"
+    echo "   [시도 2] wget 직접 다운로드"
     "${wget_fn}"
 
     if [[ ! -e "${check_path}" ]]; then
