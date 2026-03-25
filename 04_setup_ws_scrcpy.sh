@@ -110,7 +110,34 @@ echo "================================================================"
 echo " [3/5] 의존성 설치 (npm install)"
 echo "================================================================"
 cd "${WS_SCRCPY_DIR}"
-npm install
+
+# 사용할 npm 레지스트리 목록 (앞에서부터 순서대로 시도)
+NPM_REGISTRIES=(
+    "https://registry.npmjs.org"          # 기본 (해외)
+    "https://registry.npmmirror.com"      # 타오바오 미러 (중국/제한 네트워크)
+    "https://r.cnpmjs.org"                # CNPM 미러
+)
+
+npm_install_with_fallback() {
+    for registry in "${NPM_REGISTRIES[@]}"; do
+        echo "   → npm install --registry ${registry}"
+        if timeout 120 npm install --registry "${registry}" --prefer-offline 2>&1; then
+            echo "   → 의존성 설치 완료 (registry: ${registry})"
+            # 성공한 레지스트리를 기본값으로 저장
+            npm config set registry "${registry}"
+            return 0
+        fi
+        echo "   ⚠ 실패 또는 타임아웃 (${registry}), 다음 레지스트리 시도..."
+    done
+    echo "❌ 모든 레지스트리 실패"
+    echo "   → 로컬에서 node_modules 번들을 생성하여 전송하는 방법:"
+    echo "     로컬: cd ~/ws-scrcpy && npm install && tar -czf ~/ws-scrcpy-modules.tar.gz node_modules"
+    echo "     전송: scp ~/ws-scrcpy-modules.tar.gz <USER>@<SERVER>:~/ws-scrcpy/"
+    echo "     서버: cd ~/ws-scrcpy && tar -xzf ws-scrcpy-modules.tar.gz"
+    return 1
+}
+
+npm_install_with_fallback
 
 # ─────────────────────────────────────────────────────────────────
 echo "================================================================"
