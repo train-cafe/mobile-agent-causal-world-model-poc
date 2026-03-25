@@ -202,10 +202,10 @@ WS_PID=$!
 popd > /dev/null 2>&1
 echo "${WS_PID}" > "${WS_PID_FILE}"
 
-# 서버 기동 확인 (최대 30초 대기)
+# 서버 기동 확인 (최대 60초 대기)
 echo "   서버 기동 대기 중..."
 STARTED=false
-for i in $(seq 1 30); do
+for i in $(seq 1 60); do
     sleep 1
     if ! kill -0 "${WS_PID}" 2>/dev/null; then
         echo "❌ ws-scrcpy 프로세스가 예기치 않게 종료됐습니다."
@@ -213,9 +213,13 @@ for i in $(seq 1 30); do
         tail -20 "${WS_LOG}"
         exit 1
     fi
-    # 포트 리슨 여부 확인
-    if ss -tlnp 2>/dev/null | grep -q ":${WS_SCRCPY_PORT}" || \
-       netstat -tlnp 2>/dev/null | grep -q ":${WS_SCRCPY_PORT}"; then
+    # ss 포트 리슨 확인
+    if ss -tlnp 2>/dev/null | grep -q ":${WS_SCRCPY_PORT}"; then
+        STARTED=true
+        break
+    fi
+    # curl 로 실제 HTTP 응답 확인 (ss 오탐 방지)
+    if curl -sf --max-time 2 "http://localhost:${WS_SCRCPY_PORT}" -o /dev/null 2>/dev/null; then
         STARTED=true
         break
     fi
