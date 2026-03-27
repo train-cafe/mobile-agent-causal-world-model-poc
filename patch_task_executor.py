@@ -50,23 +50,30 @@ def insert_init(lines: list[str]) -> list[str]:
     """
     # Pattern: assignment of task_desc (e.g., "task_desc = ..." or parameter usage)
     # Also covers "self.task_desc = " inside a class
-    init_code = (
-        f"    causal_model = (  {PATCH_MARKER}\n"
-        f"        CausalWorldModel(task_desc)\n"
-        f"        if configs.get('CAUSAL_MODE', True) else None\n"
-        f"    )\n"
-    )
-
     # Look for the round loop start: `for round_count in range(...)`
     # Insert causal_model init just before the loop
     for i, line in enumerate(lines):
         if re.search(r"for\s+round_count\s+in\s+range", line):
+            indent = re.match(r"(\s*)", line).group(1)
+            init_code = (
+                f"{indent}causal_model = (  {PATCH_MARKER}\n"
+                f"{indent}    CausalWorldModel(task_desc)\n"
+                f"{indent}    if configs.get('CAUSAL_MODE', True) else None\n"
+                f"{indent})\n"
+            )
             lines.insert(i, init_code)
             return lines
 
     # Fallback: insert after task_desc assignment
     for i, line in enumerate(lines):
         if re.search(r"\btask_desc\s*=", line):
+            indent = re.match(r"(\s*)", line).group(1)
+            init_code = (
+                f"{indent}causal_model = (  {PATCH_MARKER}\n"
+                f"{indent}    CausalWorldModel(task_desc)\n"
+                f"{indent}    if configs.get('CAUSAL_MODE', True) else None\n"
+                f"{indent})\n"
+            )
             lines.insert(i + 1, init_code)
             return lines
 
@@ -82,13 +89,13 @@ def insert_wrap_prompt(lines: list[str]) -> list[str]:
     We insert wrap_prompt AFTER the last `re.sub(r"<last_act>"` substitution
     and BEFORE the get_model_response call.
     """
-    wrap_code = (
-        f"        if causal_model is not None:  {PATCH_MARKER}\n"
-        f"            prompt = causal_model.wrap_prompt(prompt, last_act)\n"
-    )
-
     for i, line in enumerate(lines):
         if "get_model_response" in line and "mllm" in line:
+            indent = re.match(r"(\s*)", line).group(1)
+            wrap_code = (
+                f"{indent}if causal_model is not None:  {PATCH_MARKER}\n"
+                f"{indent}    prompt = causal_model.wrap_prompt(prompt, last_act)\n"
+            )
             lines.insert(i, wrap_code)
             return lines
 
@@ -103,23 +110,31 @@ def insert_record_action(lines: list[str]) -> list[str]:
     AppAgent parses the response with parse_explore_rsp() or parse_act_rsp().
     res[4] is typically the action type; res[-1] is the summary.
     """
-    record_code = (
-        f"        if causal_model is not None and res:  {PATCH_MARKER}\n"
-        f"            # res[4]=action_type, res[-1]=summary (AppAgent response format)\n"
-        f"            _action = str(res[4]) if len(res) > 4 else str(res[0])\n"
-        f"            _summary = str(res[-1]) if res else '(no summary)'\n"
-        f"            causal_model.record_action(round_count, _action, _summary)\n"
-    )
-
     # Look for parse_explore_rsp or parse_act_rsp assignment
     for i, line in enumerate(lines):
         if re.search(r"res\s*=\s*parse_(explore|act)_rsp", line):
+            indent = re.match(r"(\s*)", line).group(1)
+            record_code = (
+                f"{indent}if causal_model is not None and res:  {PATCH_MARKER}\n"
+                f"{indent}    # res[4]=action_type, res[-1]=summary (AppAgent response format)\n"
+                f"{indent}    _action = str(res[4]) if len(res) > 4 else str(res[0])\n"
+                f"{indent}    _summary = str(res[-1]) if res else '(no summary)'\n"
+                f"{indent}    causal_model.record_action(round_count, _action, _summary)\n"
+            )
             lines.insert(i + 1, record_code)
             return lines
 
     # Fallback: look for any res = parse_*_rsp
     for i, line in enumerate(lines):
         if re.search(r"res\s*=\s*parse_\w+_rsp", line):
+            indent = re.match(r"(\s*)", line).group(1)
+            record_code = (
+                f"{indent}if causal_model is not None and res:  {PATCH_MARKER}\n"
+                f"{indent}    # res[4]=action_type, res[-1]=summary (AppAgent response format)\n"
+                f"{indent}    _action = str(res[4]) if len(res) > 4 else str(res[0])\n"
+                f"{indent}    _summary = str(res[-1]) if res else '(no summary)'\n"
+                f"{indent}    causal_model.record_action(round_count, _action, _summary)\n"
+            )
             lines.insert(i + 1, record_code)
             return lines
 
