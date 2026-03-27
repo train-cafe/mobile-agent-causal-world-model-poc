@@ -16,15 +16,14 @@ CMDLINE_TOOLS_ZIP="${HOME}/.android/cmdline-tools.zip"
 LOG_DIR="${HOME}/.android/logs"      # ← sdk_install 함수에서 참조하므로 반드시 상단에 정의
 
 # 에뮬레이터 이미지 설정
-# AVD_ARCH 환경변수로 오버라이드 가능:
-#   기본값 x86_64  — KVM 있으면 빠름, KVM 없으면 실행 불가
-#   arm64-v8a      — KVM 없어도 QEMU 에뮬레이션으로 실행 가능 (느리지만 동작)
-#                    예: AVD_ARCH=arm64-v8a bash 02_setup_android_sdk.sh
+# ⚠️ x86_64 전용: Android QEMU2는 크로스 아키텍처를 지원하지 않습니다.
+#   x86_64 호스트에서 x86_64 이미지만 실행 가능.
+#   x86_64 이미지 실행에는 KVM이 필수입니다 (/dev/kvm 필요).
+#   arm64-v8a 이미지는 x86_64 호스트에서 실행 불가 (QEMU2 크로스 아키텍처 미지원).
 API_LEVEL="34"
-ABI="${AVD_ARCH:-x86_64}"
+ABI="x86_64"
 SYS_IMAGE="system-images;android-${API_LEVEL};google_apis;${ABI}"
-AVD_NAME_ARCH="${ABI//-/_}"                          # arm64-v8a → arm64_v8a (AVD명 하이픈 제거)
-AVD_NAME="Pixel6_API${API_LEVEL}_${AVD_NAME_ARCH}"
+AVD_NAME="Pixel6_API${API_LEVEL}_x86_64"
 DEVICE_PROFILE="pixel_6"             # avdmanager 내장 디바이스
 
 # ─────────────────────────────────────────────────────────────────
@@ -224,7 +223,7 @@ else
         "${ANDROID_HOME}/platforms/android-${API_LEVEL}"
 
     echo "   → system-image 설치 중... (가장 오래 걸림, ~2-4 GB)"
-    echo "   → ABI: ${ABI} ($(if [[ "${ABI}" == "x86_64" ]]; then echo "KVM 필요"; else echo "KVM 불필요, QEMU 에뮬레이션"; fi))"
+    echo "   → ABI: ${ABI} (KVM 필수 — /dev/kvm 없으면 에뮬레이터 실행 불가)"
     sdk_install "${SYS_IMAGE}" \
         "${ANDROID_HOME}/system-images/android-${API_LEVEL}/google_apis/${ABI}/system.img"
 fi
