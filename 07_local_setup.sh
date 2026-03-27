@@ -181,6 +181,11 @@ if [[ ! -f "${PATCH_SCRIPT}" ]]; then
 fi
 
 echo "   → task_executor.py 패치 적용 중..."
+# 기존 패치가 있으면 원본에서 다시 적용 (들여쓰기 버그 등 수정 반영)
+if [[ -f "${TASK_EXECUTOR}.orig" ]]; then
+    cp "${TASK_EXECUTOR}.orig" "${TASK_EXECUTOR}"
+    echo "   → 원본 복원 후 재패치: ${TASK_EXECUTOR}.orig"
+fi
 python3 "${PATCH_SCRIPT}" "${TASK_EXECUTOR}"
 
 echo "================================================================"
