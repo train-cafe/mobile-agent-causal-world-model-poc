@@ -247,15 +247,23 @@ else
     echo "   → AVD '${AVD_NAME}' 생성 완료"
 fi
 
-# 하드웨어 가속(소프트웨어 렌더링) 설정 패치
+# GPU 설정 패치
+# 기본값: host (로컬 PC KVM+GPU 가속용)
+# 서버 헤드리스 환경이 필요하면: AVD_GPU_MODE=swiftshader_indirect bash 02_setup_android_sdk.sh
+AVD_GPU_MODE="${AVD_GPU_MODE:-host}"
 AVD_CONFIG="${HOME}/.android/avd/${AVD_NAME}.avd/config.ini"
 if [[ -f "${AVD_CONFIG}" ]]; then
-    # GPU 소프트웨어 렌더링 (서버 환경에 필수)
-    sed -i 's/^hw.gpu.enabled=.*/hw.gpu.enabled=no/' "${AVD_CONFIG}" 2>/dev/null || \
-        echo "hw.gpu.enabled=no" >> "${AVD_CONFIG}"
-    sed -i 's/^hw.gpu.mode=.*/hw.gpu.mode=swiftshader_indirect/' "${AVD_CONFIG}" 2>/dev/null || \
-        echo "hw.gpu.mode=swiftshader_indirect" >> "${AVD_CONFIG}"
-    echo "   → config.ini GPU 소프트웨어 렌더링 설정 완료"
+    if [[ "${AVD_GPU_MODE}" == "host" ]]; then
+        # 로컬 PC (KVM + GPU 가속) — Android Studio 에뮬레이터와 동일한 설정
+        sed -i 's/^hw.gpu.enabled=.*/hw.gpu.enabled=yes/' "${AVD_CONFIG}" 2>/dev/null || \
+            echo "hw.gpu.enabled=yes" >> "${AVD_CONFIG}"
+    else
+        sed -i 's/^hw.gpu.enabled=.*/hw.gpu.enabled=no/' "${AVD_CONFIG}" 2>/dev/null || \
+            echo "hw.gpu.enabled=no" >> "${AVD_CONFIG}"
+    fi
+    sed -i "s/^hw.gpu.mode=.*/hw.gpu.mode=${AVD_GPU_MODE}/" "${AVD_CONFIG}" 2>/dev/null || \
+        echo "hw.gpu.mode=${AVD_GPU_MODE}" >> "${AVD_CONFIG}"
+    echo "   → config.ini GPU 설정 완료: hw.gpu.mode=${AVD_GPU_MODE}"
 fi
 
 echo ""
@@ -263,4 +271,4 @@ echo "✅ Android SDK 및 AVD 설정 완료"
 echo "   AVD 목록:"
 avdmanager list avd | grep "Name:" || true
 echo ""
-echo "▶  다음 단계: bash 03_run_emulator.sh"
+echo "▶  다음 단계: bash scripts/local/start_emulator.sh"

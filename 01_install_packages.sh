@@ -4,6 +4,9 @@
 # 역할: sudo apt-get install 권한만으로 필수 패키지 전체 설치
 # 실행: bash 01_install_packages.sh
 # =============================================================================
+# ⚠️ DEPRECATED: server-side emulator 경로 폐기.
+# 사유: headless + swiftshader에서 상용 앱 ANR. docs/migration_plan.md 참조.
+# 대체: 로컬 PC에서 scripts/local/start_emulator.sh + SERVER_IP=<IP> bash 07_local_setup.sh
 set -euo pipefail
 
 echo "================================================================"

@@ -3,6 +3,9 @@
 # 06_setup_appagent.sh
 # AppAgent 클론 + 의존성 설치 + 로컬 vLLM 연동 설정
 # =============================================================================
+# ⚠️ DEPRECATED: server-side emulator 경로 폐기.
+# 사유: headless + swiftshader에서 상용 앱 ANR. docs/migration_plan.md 참조.
+# 대체: 로컬 PC에서 SERVER_IP=<IP> bash 07_local_setup.sh
 set -euo pipefail
 
 # ─── 설정값 ───────────────────────────────────────────────────────────────────
