@@ -16,14 +16,15 @@ CMDLINE_TOOLS_ZIP="${HOME}/.android/cmdline-tools.zip"
 LOG_DIR="${HOME}/.android/logs"      # ← sdk_install 함수에서 참조하므로 반드시 상단에 정의
 
 # 에뮬레이터 이미지 설정
-API_LEVEL="34"                       # Android 14
-# x86_64 호스트에서는 항상 x86_64 이미지 사용
-# - KVM 있음: 하드웨어 가속 (빠름)
-# - KVM 없음: -accel tcg 소프트웨어 에뮬레이션 (느리지만 동작함)
-# arm64-v8a 이미지는 x86_64 호스트에서 실행 불가 (QEMU2 크로스 아키텍처 미지원)
-ABI="x86_64"
+# AVD_ARCH 환경변수로 오버라이드 가능:
+#   기본값 x86_64  — KVM 있으면 빠름, KVM 없으면 실행 불가
+#   arm64-v8a      — KVM 없어도 QEMU 에뮬레이션으로 실행 가능 (느리지만 동작)
+#                    예: AVD_ARCH=arm64-v8a bash 02_setup_android_sdk.sh
+API_LEVEL="34"
+ABI="${AVD_ARCH:-x86_64}"
 SYS_IMAGE="system-images;android-${API_LEVEL};google_apis;${ABI}"
-AVD_NAME="Pixel6_API${API_LEVEL}_${ABI}"
+AVD_NAME_ARCH="${ABI//-/_}"                          # arm64-v8a → arm64_v8a (AVD명 하이픈 제거)
+AVD_NAME="Pixel6_API${API_LEVEL}_${AVD_NAME_ARCH}"
 DEVICE_PROFILE="pixel_6"             # avdmanager 내장 디바이스
 
 # ─────────────────────────────────────────────────────────────────
@@ -222,7 +223,8 @@ else
     sdk_install "platforms;android-${API_LEVEL}" \
         "${ANDROID_HOME}/platforms/android-${API_LEVEL}"
 
-    echo "   → system-image 설치 중... (가장 오래 걸림, ~1-2 GB)"
+    echo "   → system-image 설치 중... (가장 오래 걸림, ~2-4 GB)"
+    echo "   → ABI: ${ABI} ($(if [[ "${ABI}" == "x86_64" ]]; then echo "KVM 필요"; else echo "KVM 불필요, QEMU 에뮬레이션"; fi))"
     sdk_install "${SYS_IMAGE}" \
         "${ANDROID_HOME}/system-images/android-${API_LEVEL}/google_apis/${ABI}/system.img"
 fi
