@@ -212,20 +212,33 @@ if [[ -f "${SWIPE_PATCH}" ]] && [[ -f "${AND_CONTROLLER}" ]]; then
 fi
 
 echo "================================================================"
-echo " [5/6] 에뮬레이터 네비게이션 모드 설정"
+echo " [5/7] 에뮬레이터 네비게이션 모드 + ADBKeyboard 설정"
 echo "================================================================"
 if command -v adb &>/dev/null && adb devices 2>/dev/null | grep -q "device$"; then
     echo "   → 3버튼 네비게이션 활성화 중..."
     adb shell cmd overlay enable com.android.internal.systemui.navbar.threebutton 2>/dev/null \
         && echo "   ✅ 3버튼 네비게이션 활성화 완료" \
         || echo "   ⚠️  3버튼 네비게이션 활성화 실패 (수동 설정: 설정 → 시스템 → 제스처 → 시스템 탐색)"
+
+    # ADBKeyboard 설치 확인 (한글 입력 지원)
+    echo "   → ADBKeyboard 확인 중..."
+    if adb shell pm list packages 2>/dev/null | grep -q "com.android.adbkeyboard"; then
+        echo "   ✅ ADBKeyboard 이미 설치됨"
+        adb shell ime set com.android.adbkeyboard/.AdbIME 2>/dev/null
+        echo "   ✅ ADBKeyboard를 기본 IME로 설정"
+    else
+        echo "   ⚠️  ADBKeyboard 미설치 — 한글 입력이 필요하면 아래 설치:"
+        echo "      1. https://github.com/nicewook/ADBKeyboard/releases 에서 APK 다운로드"
+        echo "      2. adb install ADBKeyboard.apk"
+        echo "      3. adb shell ime set com.android.adbkeyboard/.AdbIME"
+    fi
 else
     echo "   ⚠️  ADB 기기 미연결 — 에뮬레이터 시작 후 아래 명령 실행:"
     echo "      adb shell cmd overlay enable com.android.internal.systemui.navbar.threebutton"
 fi
 
 echo "================================================================"
-echo " [6/6] 환경변수 파일 생성 (.env_appagent)"
+echo " [6/7] 환경변수 파일 생성 (.env_appagent)"
 echo "================================================================"
 ENV_FILE="${APPAGENT_DIR}/.env_appagent"
 cat > "${ENV_FILE}" <<EOF
