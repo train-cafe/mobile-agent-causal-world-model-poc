@@ -138,6 +138,7 @@ config = {
     "DARK_MODE":   False,
     "MIN_DIST":    30,
     "CAUSAL_MODE": True,
+    "WRAPPER_ENABLED": True,
 }
 
 config_path = "${CONFIG_FILE}"
@@ -152,7 +153,7 @@ python3 -c "
 import yaml
 with open('${CONFIG_FILE}') as f:
     c = yaml.safe_load(f)
-keys = ['MODEL','OPENAI_API_BASE','OPENAI_API_MODEL','MAX_TOKENS','CAUSAL_MODE']
+keys = ['MODEL','OPENAI_API_BASE','OPENAI_API_MODEL','MAX_TOKENS','CAUSAL_MODE','WRAPPER_ENABLED']
 for k in keys:
     print(f'     {k}: {c.get(k, \"(없음)\")}')
 "
@@ -171,6 +172,16 @@ fi
 
 cp "${CAUSAL_WRAPPER_SRC}" "${CAUSAL_WRAPPER_DST}"
 echo "   → causal_wrapper.py 복사 완료: ${CAUSAL_WRAPPER_DST}"
+
+# causal_action_wrapper.py 복사
+ACTION_WRAPPER_SRC="${SCRIPT_DIR}/causal_action_wrapper.py"
+ACTION_WRAPPER_DST="${APPAGENT_DIR}/scripts/causal_action_wrapper.py"
+if [[ -f "${ACTION_WRAPPER_SRC}" ]]; then
+    cp "${ACTION_WRAPPER_SRC}" "${ACTION_WRAPPER_DST}"
+    echo "   → causal_action_wrapper.py 복사 완료: ${ACTION_WRAPPER_DST}"
+else
+    echo "   ⚠️  causal_action_wrapper.py 없음 — 액션 래퍼 미설치"
+fi
 
 TASK_EXECUTOR="${APPAGENT_DIR}/scripts/task_executor.py"
 PATCH_SCRIPT="${SCRIPT_DIR}/patch_task_executor.py"
