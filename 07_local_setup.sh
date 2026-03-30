@@ -188,8 +188,33 @@ if [[ -f "${TASK_EXECUTOR}.orig" ]]; then
 fi
 python3 "${PATCH_SCRIPT}" "${TASK_EXECUTOR}"
 
+# and_controller.py swipe safe zone 패치
+AND_CONTROLLER="${APPAGENT_DIR}/scripts/and_controller.py"
+SWIPE_PATCH="${SCRIPT_DIR}/patch_and_controller.py"
+if [[ -f "${SWIPE_PATCH}" ]] && [[ -f "${AND_CONTROLLER}" ]]; then
+    echo "   → and_controller.py swipe safe zone 패치 적용 중..."
+    if [[ -f "${AND_CONTROLLER}.orig" ]]; then
+        cp "${AND_CONTROLLER}.orig" "${AND_CONTROLLER}"
+        echo "   → 원본 복원 후 재패치: ${AND_CONTROLLER}.orig"
+    fi
+    python3 "${SWIPE_PATCH}" "${AND_CONTROLLER}"
+fi
+
 echo "================================================================"
-echo " [5/5] 환경변수 파일 생성 (.env_appagent)"
+echo " [5/6] 에뮬레이터 네비게이션 모드 설정"
+echo "================================================================"
+if command -v adb &>/dev/null && adb devices 2>/dev/null | grep -q "device$"; then
+    echo "   → 3버튼 네비게이션 활성화 중..."
+    adb shell cmd overlay enable com.android.internal.systemui.navbar.threebutton 2>/dev/null \
+        && echo "   ✅ 3버튼 네비게이션 활성화 완료" \
+        || echo "   ⚠️  3버튼 네비게이션 활성화 실패 (수동 설정: 설정 → 시스템 → 제스처 → 시스템 탐색)"
+else
+    echo "   ⚠️  ADB 기기 미연결 — 에뮬레이터 시작 후 아래 명령 실행:"
+    echo "      adb shell cmd overlay enable com.android.internal.systemui.navbar.threebutton"
+fi
+
+echo "================================================================"
+echo " [6/6] 환경변수 파일 생성 (.env_appagent)"
 echo "================================================================"
 ENV_FILE="${APPAGENT_DIR}/.env_appagent"
 cat > "${ENV_FILE}" <<EOF
