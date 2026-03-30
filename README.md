@@ -182,6 +182,44 @@ python test_appagent_integration.py
 
 6/6 통과 시 준비 완료.
 
+### Step (선택): 실제 Samsung 기기 연결
+
+에뮬레이터와 **동시에** 또는 **대신** 실제 Galaxy 기기를 사용할 수 있습니다.
+
+```bash
+# 방법 1: USB 연결 (가장 간단)
+# Galaxy에서: 설정 → 개발자 옵션 → USB 디버깅 ON
+# USB 케이블로 PC에 연결 → "USB 디버깅 허용" 팝업 → 허용
+bash scripts/local/connect_device.sh
+
+# 방법 2: 무선 디버깅 (Android 11+ / One UI 3+)
+# Galaxy에서: 설정 → 개발자 옵션 → 무선 디버깅 ON
+bash scripts/local/connect_device.sh --wifi
+
+# 방법 3: TCP (USB 연결 후 무선 전환)
+adb tcpip 5555                   # USB 연결 상태에서
+DEVICE_IP=192.168.1.100 bash scripts/local/connect_device.sh --tcp
+```
+
+### 기기 선택 (에뮬레이터 + 실제 기기 동시 사용)
+
+```bash
+# 연결된 기기 목록 + 정보 확인
+bash scripts/local/select_device.sh list
+
+# 대화형 선택
+eval $(bash scripts/local/select_device.sh)
+
+# 번호로 직접 선택 (예: 2번째 기기)
+eval $(bash scripts/local/select_device.sh 2)
+
+# 수동 지정
+export ANDROID_SERIAL="192.168.1.100:5555"   # 실제 기기
+export ANDROID_SERIAL="emulator-5554"         # 에뮬레이터
+```
+
+`ANDROID_SERIAL`이 설정되면 AppAgent와 모든 `adb` 명령이 해당 기기를 사용합니다.
+
 ---
 
 ## AppAgent 실행
