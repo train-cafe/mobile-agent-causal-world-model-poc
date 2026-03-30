@@ -56,8 +56,10 @@ def patch(filepath: str) -> None:
     print(f"   → Controller 클래스 발견: {class_name}")
 
     # 파일 끝에 monkey-patch 블록 추가
-    patch_code = f'''
-{PATCH_MARKER}
+    # NOTE: 일반 문자열 + .replace()로 class_name만 치환.
+    #       f-string을 쓰면 패치 대상 코드의 {변수}가 스크립트 시점에 평가되어 NameError.
+    patch_code = '''
+__PATCH_MARKER__
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Monkey-patch: swipe safe zone + text 한글 지원
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -66,7 +68,7 @@ import re as _re
 
 # ── 1. Swipe Safe Zone ─────────────────────────────────────────────────────
 
-_original_swipe = {class_name}.swipe
+_original_swipe = __CLASS_NAME__.swipe
 
 def _safe_swipe(self, x, y, direction, dist="medium", quick=False):
     """swipe 좌표를 safe zone 내로 클램핑하여 시스템 제스처 충돌 방지."""
@@ -90,19 +92,12 @@ def _safe_swipe(self, x, y, direction, dist="medium", quick=False):
 
     return _original_swipe(self, x, y, direction, dist, quick)
 
-{class_name}.swipe = _safe_swipe
+__CLASS_NAME__.swipe = _safe_swipe
 
 
 # ── 2. Text 한글/유니코드 지원 ─────────────────────────────────────────────
-#
-# ADB `input text`는 ASCII만 지원.
-# 해결: ADB broadcast로 클립보드에 복사 후 붙여넣기,
-#       또는 `am broadcast` + base64 인코딩 방식.
-#
-# 가장 안정적인 방법: ADBKeyboard IME 사용.
-# ADBKeyboard가 미설치된 환경을 위해 클립보드 fallback 제공.
 
-_original_text = {class_name}.text
+_original_text = __CLASS_NAME__.text
 
 def _unicode_text(self, input_str):
     """한글 등 유니코드 텍스트를 ADB로 입력."""
@@ -113,21 +108,18 @@ def _unicode_text(self, input_str):
     except UnicodeEncodeError:
         pass
 
-    # 방법 1: ADBKeyboard IME가 설치되어 있으면 broadcast 사용
+    # 방법 1: ADBKeyboard IME broadcast (가장 안정적)
     try:
         _ime_check = _sp.run(
-            ["adb", "-s", self.device, "shell",
-             "ime", "list", "-s"],
+            ["adb", "-s", self.device, "shell", "ime", "list", "-s"],
             capture_output=True, text=True, timeout=5
         ).stdout
         if "com.android.adbkeyboard" in _ime_check:
-            # ADBKeyboard 활성화
             _sp.run(
                 ["adb", "-s", self.device, "shell",
                  "ime", "set", "com.android.adbkeyboard/.AdbIME"],
                 capture_output=True, timeout=5
             )
-            # broadcast로 텍스트 전송
             ret = _sp.run(
                 ["adb", "-s", self.device, "shell",
                  "am", "broadcast", "-a", "ADB_INPUT_TEXT",
@@ -135,71 +127,41 @@ def _unicode_text(self, input_str):
                 capture_output=True, text=True, timeout=10
             )
             if ret.returncode == 0:
-                print(f"[ADBKeyboard] 텍스트 입력: {{input_str}}")
+                print(f"[ADBKeyboard] 텍스트 입력: {input_str}")
                 return ret.stdout
     except Exception:
         pass
 
-    # 방법 2: 클립보드를 이용한 붙여넣기
-    #   - service call clipboard 방식은 Android 버전별로 다르므로
-    #   - am broadcast + content provider 방식 사용
+    # 방법 2: 클립보드 붙여넣기 (KEYCODE_PASTE)
     try:
-        import base64 as _b64
-        encoded = _b64.b64encode(input_str.encode("utf-8")).decode("ascii")
-        # Python helper를 에뮬레이터에서 직접 실행하여 클립보드 설정
-        # Android shell에서 base64 디코드 후 클립보드에 복사
-        clip_script = (
-            f"python3 -c \\"import base64; "
-            f"open('/data/local/tmp/_clip.txt','wb')"
-            f".write(base64.b64decode('{encoded}'))\\""
-        )
-        _sp.run(
-            ["adb", "-s", self.device, "shell", clip_script],
-            capture_output=True, timeout=5
-        )
-        # input text로 한 글자씩은 너무 느림 — 대신 keyevent로 붙여넣기 시도
-        # 우선 텍스트 파일 푸시 후 input으로 처리
-    except Exception:
-        pass
-
-    # 방법 3: 최후 수단 — 한 글자씩 keyevent (매우 느리지만 확실)
-    # 실패 시 에러 메시지와 함께 ADBKeyboard 설치 안내
-    print(f"[WARNING] 한글 입력 실패. ADBKeyboard 설치를 권장합니다.")
-    print(f"  설치: adb install ADBKeyboard.apk")
-    print(f"  다운로드: https://github.com/nicewook/ADBKeyboard")
-    print(f"  입력 시도 텍스트: {{input_str}}")
-
-    # 마지막 시도: content provider를 통한 clipboard set + paste
-    try:
-        # 클립보드에 텍스트 설정 (Android 10+ content provider)
         _sp.run(
             ["adb", "-s", self.device, "shell",
              "am", "broadcast", "-a", "clipper.set", "-e", "text", input_str],
             capture_output=True, timeout=5
         )
-        # Ctrl+V 붙여넣기 시뮬레이션
         _sp.run(
             ["adb", "-s", self.device, "shell",
-             "input", "keyevent", "279"],  # KEYCODE_PASTE
+             "input", "keyevent", "279"],
             capture_output=True, timeout=5
         )
-        print(f"[Clipboard] 클립보드 붙여넣기 시도: {{input_str}}")
+        print(f"[Clipboard] 클립보드 붙여넣기 시도: {input_str}")
         return "clipboard paste attempted"
-    except Exception as e:
-        return f"ERROR: 유니코드 입력 실패: {{e}}"
+    except Exception:
+        pass
 
-{class_name}.text = _unicode_text
+    # 방법 3: 실패 — ADBKeyboard 설치 안내
+    print("[WARNING] 한글 입력 실패. ADBKeyboard 설치를 권장합니다.")
+    print("  설치: adb install ADBKeyboard.apk")
+    print("  다운로드: https://github.com/nicewook/ADBKeyboard")
+    print(f"  입력 시도 텍스트: {input_str}")
+    return f"ERROR: 유니코드 입력 실패: {input_str}"
 
-
-# ── 3. Tap/Swipe 좌표 범위 검증 (task_executor 레벨에서 처리) ──────────────
-#   → 이 부분은 task_executor.py 패치에서 처리
-#   → and_controller.py의 tap/swipe 자체는 좌표만 받으므로 여기서는 미처리
-#   → elem_list[area-1] 범위 초과는 task_executor 패치에서 guard
+__CLASS_NAME__.text = _unicode_text
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # End of monkey-patch
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-'''
+'''.replace("__CLASS_NAME__", class_name).replace("__PATCH_MARKER__", PATCH_MARKER)
 
     patched_source = source + patch_code
     path.write_text(patched_source, encoding="utf-8")
