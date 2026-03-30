@@ -47,6 +47,7 @@ def insert_imports(lines: list[str]) -> list[str]:
             import_block_end = i
 
     imports = (
+        f"import os  {PATCH_MARKER}\n"
         f"from causal_wrapper import CausalWorldModel  {PATCH_MARKER}\n"
         f"from causal_action_wrapper import (  {WRAPPER_MARKER}\n"
         f"    CausalWrapper, ProposedAction, is_wrapper_enabled\n"
@@ -70,13 +71,18 @@ def insert_init(lines: list[str]) -> list[str]:
             indent = re.match(r"(\s*)", line).group(1)
             init_code = (
                 f"{indent}# ── Causal 프롬프트 래퍼 초기화 ──  {PATCH_MARKER}\n"
-                f"{indent}causal_model = (\n"
-                f"{indent}    CausalWorldModel(task_desc)\n"
-                f"{indent}    if configs.get('CAUSAL_MODE', True) else None\n"
-                f"{indent})\n"
+                f"{indent}# 환경변수 우선, 미설정 시 config.yaml 참조\n"
+                f"{indent}_causal_env = os.environ.get('CAUSAL_MODE', '').strip().lower()\n"
+                f"{indent}_causal_on = (_causal_env not in ('false', '0', 'no', 'off')\n"
+                f"{indent}    if _causal_env else configs.get('CAUSAL_MODE', True))\n"
+                f"{indent}causal_model = CausalWorldModel(task_desc) if _causal_on else None\n"
+                f"{indent}print(f'[Causal] CAUSAL_MODE={{_causal_on}} (env={{repr(_causal_env) if _causal_env else \"unset\"}})')\n"
                 f"{indent}# ── Causal 액션 래퍼 초기화 ──  {WRAPPER_MARKER}\n"
-                f"{indent}_wrapper_on = is_wrapper_enabled() and configs.get('WRAPPER_ENABLED', True)\n"
+                f"{indent}_wrapper_env = os.environ.get('WRAPPER_ENABLED', '').strip().lower()\n"
+                f"{indent}_wrapper_on = (_wrapper_env not in ('false', '0', 'no', 'off')\n"
+                f"{indent}    if _wrapper_env else configs.get('WRAPPER_ENABLED', True))\n"
                 f"{indent}action_wrapper = CausalWrapper(task_desc) if _wrapper_on else None\n"
+                f"{indent}print(f'[Causal] WRAPPER_ENABLED={{_wrapper_on}} (env={{repr(_wrapper_env) if _wrapper_env else \"unset\"}})')\n"
                 f"\n"
             )
             lines.insert(i, init_code)
@@ -87,11 +93,15 @@ def insert_init(lines: list[str]) -> list[str]:
         if re.search(r"\btask_desc\s*=", line):
             indent = re.match(r"(\s*)", line).group(1)
             init_code = (
-                f"{indent}causal_model = (  {PATCH_MARKER}\n"
-                f"{indent}    CausalWorldModel(task_desc)\n"
-                f"{indent}    if configs.get('CAUSAL_MODE', True) else None\n"
-                f"{indent})\n"
-                f"{indent}_wrapper_on = is_wrapper_enabled() and configs.get('WRAPPER_ENABLED', True)  {WRAPPER_MARKER}\n"
+                f"{indent}# ── Causal 프롬프트 래퍼 초기화 ──  {PATCH_MARKER}\n"
+                f"{indent}_causal_env = os.environ.get('CAUSAL_MODE', '').strip().lower()\n"
+                f"{indent}_causal_on = (_causal_env not in ('false', '0', 'no', 'off')\n"
+                f"{indent}    if _causal_env else configs.get('CAUSAL_MODE', True))\n"
+                f"{indent}causal_model = CausalWorldModel(task_desc) if _causal_on else None\n"
+                f"{indent}# ── Causal 액션 래퍼 초기화 ──  {WRAPPER_MARKER}\n"
+                f"{indent}_wrapper_env = os.environ.get('WRAPPER_ENABLED', '').strip().lower()\n"
+                f"{indent}_wrapper_on = (_wrapper_env not in ('false', '0', 'no', 'off')\n"
+                f"{indent}    if _wrapper_env else configs.get('WRAPPER_ENABLED', True))\n"
                 f"{indent}action_wrapper = CausalWrapper(task_desc) if _wrapper_on else None\n"
             )
             lines.insert(i + 1, init_code)
