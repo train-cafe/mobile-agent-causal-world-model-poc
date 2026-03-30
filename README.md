@@ -28,13 +28,18 @@ AppAgent에 Pearl's Causality Ladder Level 2 (Intervention) 추론 + 액션 검�
 
 ---
 
-## 빠른 시작 (이미 환경 구성됨)
+## 빠른 시작 (재부팅 후 재실행)
 
-이미 초기 설치를 완료한 후, 재부팅/재접속 시 실행하는 순서입니다.
+> **전제 조건**: 아래 [초기 설치](#초기-설치-처음부터)가 **모두 완료된 상태**입니다.
+> 즉, `~/AppAgent` 디렉토리, `~/appagent-env` venv, `config.yaml`, 패치 적용이 끝난 상태.
+> 초기 설치를 아직 안 했다면 [초기 설치 (처음부터)](#초기-설치-처음부터)로 이동하세요.
 
-### 서버 (vLLM 재시작)
+로컬 PC 재부팅, 서버 재시작, SSH 끊김 이후 **다시 실행**하는 전체 순서입니다.
+
+### 1단계: 서버 — vLLM 재시작
 
 ```bash
+# 서버 SSH 접속 후
 cd /group-volume/<user>/mobile-agent-causal-world-model-poc
 bash 05_setup_vllm.sh
 # → 기존 vLLM 세션 종료 후 재시작, 모델 로딩 대기 (약 2~3분)
@@ -43,24 +48,42 @@ bash 05_setup_vllm.sh
 bash scripts/server/verify_vllm.sh
 ```
 
-### 로컬 (에뮬레이터 + SSH 터널 + AppAgent)
+### 2단계: 로컬 — SSH 터널 연결
+
+서버 IP로 직접 접근이 안 되는 환경에서 필수입니다.
 
 ```bash
-# 1) 에뮬레이터 시작
+# 터미널 1: 터널 열어두기 (백그라운드)
+ssh -i mlp-n8.pem -p 3307 \
+    -L 8080:10.11.245.167:8080 \
+    kang9.lee@jumping-host.n8.sr-cloud.com -N &
+
+# 연결 확인
+curl -s http://127.0.0.1:8080/health && echo "OK"
+```
+
+### 3단계: 로컬 — 에뮬레이터 시작
+
+```bash
+# AVD 이름 확인
+emulator -list-avds
+
+# 에뮬레이터 시작
 emulator -avd <AVD이름> &
-# AVD 이름 모르면: emulator -list-avds
 # Android Studio 사용 시: Device Manager → ▶ (Play)
 
 # 부팅 완료 대기
 adb wait-for-device && adb shell 'while [ "$(getprop sys.boot_completed)" != "1" ]; do sleep 2; done' && echo "부팅 완료"
+```
 
-# 2) SSH 터널 (서버 직접 접근 불가 시)
-ssh -i mlp-n8.pem -p 3307 -L 8080:10.11.245.167:8080 kang9.lee@jumping-host.n8.sr-cloud.com -N &
+### 4단계: 로컬 — AppAgent 실행
 
-# 3) AppAgent 실행
+```bash
 source ~/AppAgent/.env_appagent
 source ~/appagent-env/bin/activate
 cd ~/AppAgent
+
+# 대화형 실행
 python run.py --app <앱패키지명>
 ```
 
@@ -245,30 +268,69 @@ Please enter the description of the task...
 → 설정에서 WiFi 메뉴로 이동해줘
 ```
 
+#### 대화형에서 Wrapper ON/OFF 전환
+
+대화형 실행 전에 환경변수를 `export`로 설정합니다:
+
+```bash
+# Wrapper OFF (순수 AppAgent)
+export CAUSAL_MODE=false
+export WRAPPER_ENABLED=false
+python run.py --app com.android.settings
+
+# Wrapper ON (기본값으로 복원)
+export CAUSAL_MODE=true
+export WRAPPER_ENABLED=true
+python run.py --app com.android.settings
+
+# 또는 한 줄로 (export 없이)
+CAUSAL_MODE=false WRAPPER_ENABLED=false python run.py --app com.android.settings
+```
+
 ### 비대화형 실행 (파이프)
 
 ```bash
 printf 'y\n설정에서 WiFi 메뉴로 이동해줘\n' | python run.py --app com.android.settings
 ```
 
-### Wrapper ON/OFF 전환
+#### 비대화형에서 Wrapper ON/OFF 전환
+
+> **주의**: `VAR=val cmd1 | cmd2` 구문은 `cmd1`(printf)에만 환경변수가 적용되고,
+> `cmd2`(python)에는 적용되지 않습니다. 반드시 `export`를 사용하세요.
+
+```bash
+# 방법 1: export 후 파이프 (권장)
+export CAUSAL_MODE=false WRAPPER_ENABLED=false
+printf 'y\n구글 지도에서 강남역 검색해줘\n' | python run.py --app com.google.android.apps.maps
+
+# 방법 2: subshell에서 export
+(export CAUSAL_MODE=false WRAPPER_ENABLED=false; \
+ printf 'y\n구글 지도에서 강남역 검색해줘\n' | python run.py --app com.google.android.apps.maps)
+
+# 다시 ON으로 되돌리기
+export CAUSAL_MODE=true WRAPPER_ENABLED=true
+```
+
+### Wrapper ON/OFF 정리
 
 | 제어 대상 | ON (기본) | OFF |
 |-----------|-----------|-----|
-| **프롬프트 래퍼** | `CAUSAL_MODE=true` | `CAUSAL_MODE=false` |
-| **액션 래퍼** | `WRAPPER_ENABLED=true` | `WRAPPER_ENABLED=false` |
-| **모두 OFF** | — | `CAUSAL_MODE=false WRAPPER_ENABLED=false` |
+| **프롬프트 래퍼** | `export CAUSAL_MODE=true` | `export CAUSAL_MODE=false` |
+| **액션 래퍼** | `export WRAPPER_ENABLED=true` | `export WRAPPER_ENABLED=false` |
+| **모두 OFF** | — | `export CAUSAL_MODE=false WRAPPER_ENABLED=false` |
 
-```bash
-# 예: 래퍼 없이 순수 AppAgent로 실행
-CAUSAL_MODE=false WRAPPER_ENABLED=false \
-    printf 'y\n구글 지도에서 강남역 검색해줘\n' | python run.py --app com.google.android.apps.maps
+**우선순위**: 환경변수 > config.yaml. 환경변수 미설정 시 config.yaml 값을 사용합니다.
+
+config.yaml에서도 기본값 변경 가능:
+```yaml
+CAUSAL_MODE: False       # 프롬프트 래퍼 기본 OFF
+WRAPPER_ENABLED: False   # 액션 래퍼 기본 OFF
 ```
 
-config.yaml에서도 설정 가능:
-```yaml
-CAUSAL_MODE: True        # 프롬프트 래퍼
-WRAPPER_ENABLED: True    # 액션 래퍼
+실행 시 콘솔에 현재 설정이 표시됩니다:
+```
+[Causal] CAUSAL_MODE=False (env='false')
+[Causal] WRAPPER_ENABLED=False (env='false')
 ```
 
 ---
@@ -281,12 +343,12 @@ source ~/appagent-env/bin/activate
 cd ~/PythonProgramming/mobile-agent-causal-world-model-poc
 
 # Control (Causal 없이) — 5회
-CAUSAL_MODE=false WRAPPER_ENABLED=false \
-    python poc_experiment.py --scenario cart_add --mode control --rounds 5
+export CAUSAL_MODE=false WRAPPER_ENABLED=false
+python poc_experiment.py --scenario cart_add --mode control --rounds 5
 
 # Treatment (Causal + Wrapper) — 5회
-CAUSAL_MODE=true WRAPPER_ENABLED=true \
-    python poc_experiment.py --scenario cart_add --mode treatment --rounds 5
+export CAUSAL_MODE=true WRAPPER_ENABLED=true
+python poc_experiment.py --scenario cart_add --mode treatment --rounds 5
 
 # 결과 비교
 python poc_experiment.py --compare --scenario cart_add
