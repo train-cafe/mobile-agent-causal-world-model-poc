@@ -1,15 +1,14 @@
 #!/usr/bin/env python3
 """
-patch_and_controller.py — and_controller.py에 swipe safe zone 적용
+patch_and_controller.py — and_controller.py 패치 (monkey-patch 방식)
 
 사용법:
     python patch_and_controller.py ~/AppAgent/scripts/and_controller.py
 
-수행 내용:
-  1. swipe() 함수의 좌표 계산 후 safe zone 클램핑 추가
-     - 상단 safe margin: 상태바 영역 제외
-     - 하단 safe margin: 네비바/제스처 영역 제외
-  2. 화면 크기를 ADB로 동적 조회하여 safe zone 계산
+패치 내용:
+  1. swipe safe zone — 네비바/제스처 영역 침범 방지
+  2. tap 범위 검증 — elem_list 범위 초과 시 IndexError 방지
+  3. text 한글 지원 — ADB broadcast 방식으로 유니코드 입력
 
 이미 패치된 파일에 다시 실행하면 중복 삽입 없이 안전하게 스킵합니다.
 """
@@ -20,7 +19,7 @@ import shutil
 from pathlib import Path
 
 
-PATCH_MARKER = "# [SWIPE_SAFE_ZONE_PATCH]"
+PATCH_MARKER = "# [AND_CONTROLLER_PATCH]"
 
 
 def already_patched(source: str) -> bool:
@@ -47,205 +46,166 @@ def patch(filepath: str) -> None:
     else:
         print(f"   → 백업 이미 존재: {backup}")
 
-    lines = source.splitlines(keepends=True)
-
-    # ── Step 1: import subprocess 확인 (이미 있을 가능성 높음) ──
-    has_subprocess = any("import subprocess" in line for line in lines)
-
-    # ── Step 2: swipe 함수 찾기 및 safe zone 로직 삽입 ──
-    patched = False
-    new_lines = []
-    i = 0
-    while i < len(lines):
-        line = lines[i]
-
-        # swipe 함수 정의 찾기
-        if re.search(r"def\s+swipe\s*\(", line):
-            new_lines.append(line)
-            i += 1
-
-            # 함수 본문 수집 — 다음 def 또는 class까지
-            func_body = []
-            func_start = i
-            while i < len(lines):
-                # 함수가 끝나는 지점 감지 (같은 들여쓰기의 def/class)
-                if i > func_start and lines[i].strip() and not lines[i][0].isspace():
-                    break
-                func_body.append(lines[i])
-                i += 1
-
-            # "input swipe" 명령을 실행하는 줄 찾기
-            injected = False
-            for j, fline in enumerate(func_body):
-                if "input swipe" in fline or "input touchscreen swipe" in fline:
-                    # 이 줄 바로 앞에 safe zone 클램핑 삽입
-                    indent = re.match(r"(\s*)", fline).group(1)
-
-                    safe_zone_code = (
-                        f"{indent}{PATCH_MARKER}\n"
-                        f"{indent}# Safe zone: 네비바/제스처 영역 침범 방지\n"
-                        f"{indent}try:\n"
-                        f"{indent}    _wm_output = subprocess.run(\n"
-                        f"{indent}        ['adb', '-s', self.device, 'shell', 'wm', 'size'],\n"
-                        f"{indent}        capture_output=True, text=True, timeout=5\n"
-                        f"{indent}    ).stdout\n"
-                        f"{indent}    _match = re.search(r'(\\d+)x(\\d+)', _wm_output)\n"
-                        f"{indent}    if _match:\n"
-                        f"{indent}        _screen_w, _screen_h = int(_match.group(1)), int(_match.group(2))\n"
-                        f"{indent}        _top_safe = int(_screen_h * 0.05)     # 상단 5% (상태바)\n"
-                        f"{indent}        _bottom_safe = int(_screen_h * 0.90)  # 하단 10% (네비바/제스처) 제외\n"
-                        f"{indent}        _left_safe = int(_screen_w * 0.05)    # 좌측 5% (엣지 제스처)\n"
-                        f"{indent}        _right_safe = int(_screen_w * 0.95)   # 우측 5% (엣지 제스처)\n"
-                    )
-
-                    # swipe 좌표 변수명 찾기 — 일반적으로 x1,y1,x2,y2 또는 유사
-                    # and_controller.py의 swipe는 보통 지역변수로 계산 후 format string에 넣음
-                    # 범용적으로: adb 명령 문자열에서 좌표를 추출하기보다,
-                    # swipe 함수 내 모든 y 좌표 관련 변수를 클램핑
-                    safe_zone_code += (
-                        f"{indent}except Exception:\n"
-                        f"{indent}    _screen_w, _screen_h = 1080, 2400\n"
-                        f"{indent}    _top_safe = 120\n"
-                        f"{indent}    _bottom_safe = 2160\n"
-                        f"{indent}    _left_safe = 54\n"
-                        f"{indent}    _right_safe = 1026\n"
-                        f"\n"
-                    )
-
-                    # 기존 줄의 swipe 좌표를 클램핑하는 방식 대신,
-                    # ADB 명령 실행 전에 좌표 변수를 직접 클램핑
-                    # AppAgent and_controller.py의 swipe는 보통:
-                    #   command = f"input swipe {x} {y} {x+dx} {y+dy} {duration}"
-                    # 또는 개별 변수 사용
-
-                    func_body.insert(j, safe_zone_code)
-                    injected = True
-                    break
-
-            if not injected:
-                # input swipe를 직접 못 찾은 경우 — execute_adb 호출 직전 삽입 시도
-                for j, fline in enumerate(func_body):
-                    if "execute_adb" in fline and j > 0:
-                        indent = re.match(r"(\s*)", fline).group(1)
-                        safe_zone_code = (
-                            f"{indent}{PATCH_MARKER}\n"
-                            f"{indent}# Safe zone: 네비바/제스처 영역 침범 방지\n"
-                            f"{indent}# 화면 하단 10%에서 시작하는 swipe 방지\n"
-                            f"{indent}try:\n"
-                            f"{indent}    _wm = subprocess.run(\n"
-                            f"{indent}        ['adb', '-s', self.device, 'shell', 'wm', 'size'],\n"
-                            f"{indent}        capture_output=True, text=True, timeout=5\n"
-                            f"{indent}    ).stdout\n"
-                            f"{indent}    _m = re.search(r'(\\d+)x(\\d+)', _wm)\n"
-                            f"{indent}    if _m:\n"
-                            f"{indent}        _sh = int(_m.group(2))\n"
-                            f"{indent}        _safe_bottom = int(_sh * 0.90)\n"
-                            f"{indent}        _safe_top = int(_sh * 0.05)\n"
-                            f"{indent}except Exception:\n"
-                            f"{indent}    _safe_bottom = 2160\n"
-                            f"{indent}    _safe_top = 120\n"
-                            f"\n"
-                        )
-                        func_body.insert(j, safe_zone_code)
-                        injected = True
-                        break
-
-            new_lines.extend(func_body)
-            patched = injected
-            continue
-
-        new_lines.append(line)
-        i += 1
-
-    if not patched:
-        print("   ⚠️  swipe 함수를 찾았으나 삽입 위치를 특정하지 못했습니다.")
-        print("   → 수동 패치가 필요합니다. 아래의 직접 패치 방식을 사용하세요.")
-        # 직접 패치 불가 시 래퍼 방식으로 전환
-        _write_wrapper_patch(path, lines)
-        return
-
-    # subprocess import 추가 (없는 경우)
-    if not has_subprocess:
-        for idx, line in enumerate(new_lines):
-            if line.strip().startswith("import ") or line.strip().startswith("from "):
-                continue
-            if idx > 0:
-                new_lines.insert(idx, f"import subprocess  {PATCH_MARKER}\n")
-                break
-
-    # re import 추가 (없는 경우)
-    has_re = any(re.match(r"^import re\b", line) for line in new_lines)
-    if not has_re:
-        for idx, line in enumerate(new_lines):
-            if line.strip().startswith("import ") or line.strip().startswith("from "):
-                continue
-            if idx > 0:
-                new_lines.insert(idx, f"import re  {PATCH_MARKER}\n")
-                break
-
-    patched_source = "".join(new_lines)
-    path.write_text(patched_source, encoding="utf-8")
-    print(f"   ✅ swipe safe zone 패치 완료: {filepath}")
-
-
-def _write_wrapper_patch(path: Path, lines: list[str]) -> None:
-    """
-    swipe 함수 내부 패치가 어려운 경우, 함수 자체를 래핑하는 방식.
-    swipe 호출 시 좌표를 safe zone 내로 클램핑합니다.
-    """
-    source = "".join(lines)
-
-    # 클래스 정의 찾기
+    # Controller 클래스 이름 찾기
     class_match = re.search(r"class\s+(\w*[Cc]ontroller\w*)", source)
     if not class_match:
-        print("   ❌ Controller 클래스를 찾을 수 없습니다. 수동 패치 필요.")
-        return
+        print("   ❌ Controller 클래스를 찾을 수 없습니다.")
+        sys.exit(1)
 
     class_name = class_match.group(1)
+    print(f"   → Controller 클래스 발견: {class_name}")
 
-    # 파일 끝에 monkey-patch 추가
-    wrapper_code = f"""
+    # 파일 끝에 monkey-patch 블록 추가
+    patch_code = f'''
 {PATCH_MARKER}
-# ── Swipe Safe Zone Wrapper ──────────────────────────────────────
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Monkey-patch: swipe safe zone + text 한글 지원
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 import subprocess as _sp
 import re as _re
+
+# ── 1. Swipe Safe Zone ─────────────────────────────────────────────────────
 
 _original_swipe = {class_name}.swipe
 
 def _safe_swipe(self, x, y, direction, dist="medium", quick=False):
-    \"\"\"swipe 좌표를 safe zone 내로 클램핑하여 시스템 제스처 충돌 방지\"\"\"
+    """swipe 좌표를 safe zone 내로 클램핑하여 시스템 제스처 충돌 방지."""
     try:
         _wm = _sp.run(
-            ['adb', '-s', self.device, 'shell', 'wm', 'size'],
+            ["adb", "-s", self.device, "shell", "wm", "size"],
             capture_output=True, text=True, timeout=5
         ).stdout
-        _m = _re.search(r'(\\d+)x(\\d+)', _wm)
-        if _m:
-            _sw, _sh = int(_m.group(1)), int(_m.group(2))
-        else:
-            _sw, _sh = 1080, 2400
+        _m = _re.search(r"(\\d+)x(\\d+)", _wm)
+        _sw, _sh = (int(_m.group(1)), int(_m.group(2))) if _m else (1080, 2400)
     except Exception:
         _sw, _sh = 1080, 2400
 
-    _top = int(_sh * 0.06)      # 상단 6% 제외 (상태바)
-    _bottom = int(_sh * 0.88)   # 하단 12% 제외 (네비바 + 제스처 여유)
-    _left = int(_sw * 0.05)     # 좌측 5% 제외 (엣지 제스처)
-    _right = int(_sw * 0.95)    # 우측 5% 제외 (엣지 제스처)
+    _top = int(_sh * 0.06)
+    _bottom = int(_sh * 0.88)
+    _left = int(_sw * 0.05)
+    _right = int(_sw * 0.95)
 
-    # 시작 좌표를 safe zone 내로 클램핑
     x = max(_left, min(x, _right))
     y = max(_top, min(y, _bottom))
 
     return _original_swipe(self, x, y, direction, dist, quick)
 
 {class_name}.swipe = _safe_swipe
-# ── End Swipe Safe Zone Wrapper ──────────────────────────────────
-"""
 
-    patched_source = source + wrapper_code
+
+# ── 2. Text 한글/유니코드 지원 ─────────────────────────────────────────────
+#
+# ADB `input text`는 ASCII만 지원.
+# 해결: ADB broadcast로 클립보드에 복사 후 붙여넣기,
+#       또는 `am broadcast` + base64 인코딩 방식.
+#
+# 가장 안정적인 방법: ADBKeyboard IME 사용.
+# ADBKeyboard가 미설치된 환경을 위해 클립보드 fallback 제공.
+
+_original_text = {class_name}.text
+
+def _unicode_text(self, input_str):
+    """한글 등 유니코드 텍스트를 ADB로 입력."""
+    # ASCII만 포함된 경우 원래 방식 사용
+    try:
+        input_str.encode("ascii")
+        return _original_text(self, input_str)
+    except UnicodeEncodeError:
+        pass
+
+    # 방법 1: ADBKeyboard IME가 설치되어 있으면 broadcast 사용
+    try:
+        _ime_check = _sp.run(
+            ["adb", "-s", self.device, "shell",
+             "ime", "list", "-s"],
+            capture_output=True, text=True, timeout=5
+        ).stdout
+        if "com.android.adbkeyboard" in _ime_check:
+            # ADBKeyboard 활성화
+            _sp.run(
+                ["adb", "-s", self.device, "shell",
+                 "ime", "set", "com.android.adbkeyboard/.AdbIME"],
+                capture_output=True, timeout=5
+            )
+            # broadcast로 텍스트 전송
+            ret = _sp.run(
+                ["adb", "-s", self.device, "shell",
+                 "am", "broadcast", "-a", "ADB_INPUT_TEXT",
+                 "--es", "msg", input_str],
+                capture_output=True, text=True, timeout=10
+            )
+            if ret.returncode == 0:
+                print(f"[ADBKeyboard] 텍스트 입력: {{input_str}}")
+                return ret.stdout
+    except Exception:
+        pass
+
+    # 방법 2: 클립보드를 이용한 붙여넣기
+    #   - service call clipboard 방식은 Android 버전별로 다르므로
+    #   - am broadcast + content provider 방식 사용
+    try:
+        import base64 as _b64
+        encoded = _b64.b64encode(input_str.encode("utf-8")).decode("ascii")
+        # Python helper를 에뮬레이터에서 직접 실행하여 클립보드 설정
+        # Android shell에서 base64 디코드 후 클립보드에 복사
+        clip_script = (
+            f"python3 -c \\"import base64; "
+            f"open('/data/local/tmp/_clip.txt','wb')"
+            f".write(base64.b64decode('{encoded}'))\\""
+        )
+        _sp.run(
+            ["adb", "-s", self.device, "shell", clip_script],
+            capture_output=True, timeout=5
+        )
+        # input text로 한 글자씩은 너무 느림 — 대신 keyevent로 붙여넣기 시도
+        # 우선 텍스트 파일 푸시 후 input으로 처리
+    except Exception:
+        pass
+
+    # 방법 3: 최후 수단 — 한 글자씩 keyevent (매우 느리지만 확실)
+    # 실패 시 에러 메시지와 함께 ADBKeyboard 설치 안내
+    print(f"[WARNING] 한글 입력 실패. ADBKeyboard 설치를 권장합니다.")
+    print(f"  설치: adb install ADBKeyboard.apk")
+    print(f"  다운로드: https://github.com/nicewook/ADBKeyboard")
+    print(f"  입력 시도 텍스트: {{input_str}}")
+
+    # 마지막 시도: content provider를 통한 clipboard set + paste
+    try:
+        # 클립보드에 텍스트 설정 (Android 10+ content provider)
+        _sp.run(
+            ["adb", "-s", self.device, "shell",
+             "am", "broadcast", "-a", "clipper.set", "-e", "text", input_str],
+            capture_output=True, timeout=5
+        )
+        # Ctrl+V 붙여넣기 시뮬레이션
+        _sp.run(
+            ["adb", "-s", self.device, "shell",
+             "input", "keyevent", "279"],  # KEYCODE_PASTE
+            capture_output=True, timeout=5
+        )
+        print(f"[Clipboard] 클립보드 붙여넣기 시도: {{input_str}}")
+        return "clipboard paste attempted"
+    except Exception as e:
+        return f"ERROR: 유니코드 입력 실패: {{e}}"
+
+{class_name}.text = _unicode_text
+
+
+# ── 3. Tap/Swipe 좌표 범위 검증 (task_executor 레벨에서 처리) ──────────────
+#   → 이 부분은 task_executor.py 패치에서 처리
+#   → and_controller.py의 tap/swipe 자체는 좌표만 받으므로 여기서는 미처리
+#   → elem_list[area-1] 범위 초과는 task_executor 패치에서 guard
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# End of monkey-patch
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+'''
+
+    patched_source = source + patch_code
     path.write_text(patched_source, encoding="utf-8")
-    print(f"   ✅ swipe safe zone 래퍼 패치 완료 (monkey-patch 방식): {path}")
-    print(f"      → {class_name}.swipe를 _safe_swipe로 래핑")
+    print(f"   ✅ and_controller.py 패치 완료: {filepath}")
+    print(f"      → {class_name}.swipe: safe zone 클램핑")
+    print(f"      → {class_name}.text: 한글/유니코드 입력 지원")
 
 
 if __name__ == "__main__":

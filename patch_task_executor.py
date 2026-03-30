@@ -154,12 +154,23 @@ def insert_action_wrapper(lines: list[str]) -> list[str]:
             break
 
     # `act_name = res[0]` 이후, `if act_name == "FINISH"` 직전에
-    # wrapper.evaluate() 호출 삽입
+    # wrapper.evaluate() 호출 + elem_list 범위 검증 삽입
     for i, line in enumerate(lines):
         # "if act_name == "FINISH"" 또는 유사 패턴
         if re.search(r'if\s+act_name\s*==\s*["\']FINISH["\']', line):
             indent = re.match(r"(\s*)", line).group(1)
             wrapper_code = (
+                f"{indent}# ── elem_list 범위 초과 방어 ──  {WRAPPER_MARKER}\n"
+                f"{indent}if act_name in ('tap', 'long_press', 'swipe') and len(res) > 1:\n"
+                f"{indent}    _area_idx = res[1] if isinstance(res[1], int) else None\n"
+                f"{indent}    if _area_idx is not None and _area_idx > len(elem_list):\n"
+                f"{indent}        print_with_color(\n"
+                f"{indent}            f'[Guard] 요소 번호 {{_area_idx}} > 최대 {{len(elem_list)}}. 스킵.', 'red'\n"
+                f"{indent}        )\n"
+                f"{indent}        last_act = f'[SKIPPED] 존재하지 않는 UI 요소 {{_area_idx}} 참조'\n"
+                f"{indent}        time.sleep(configs.get('REQUEST_INTERVAL', 3))\n"
+                f"{indent}        continue\n"
+                f"\n"
                 f"{indent}# ── CausalWrapper 액션 검증 ──  {WRAPPER_MARKER}\n"
                 f"{indent}if action_wrapper is not None and act_name != 'FINISH':\n"
                 f"{indent}    _proposed = ProposedAction(\n"
