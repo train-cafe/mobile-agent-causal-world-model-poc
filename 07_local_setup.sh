@@ -255,37 +255,57 @@ export PATH="\${ANDROID_HOME}/platform-tools:\${PATH}"
 
 # Causal World Model 활성화 여부 (true/false)
 export CAUSAL_MODE="true"
+export WRAPPER_ENABLED="true"
 EOF
 echo "   → ${ENV_FILE} 생성 완료"
+
+echo ""
+echo "================================================================"
+echo " [7/7] ADB 기기 현황"
+echo "================================================================"
+if command -v adb &>/dev/null; then
+    DEVICE_COUNT=$(adb devices 2>/dev/null | tail -n +2 | grep -c "device$" || true)
+    echo "   연결된 기기: ${DEVICE_COUNT}개"
+    adb devices 2>/dev/null | tail -n +2 | grep -v "^$" | while read -r line; do
+        DEV=$(echo "$line" | awk '{print $1}')
+        MODEL=$(adb -s "$DEV" shell getprop ro.product.model 2>/dev/null | tr -d '\r' || echo "?")
+        BRAND=$(adb -s "$DEV" shell getprop ro.product.brand 2>/dev/null | tr -d '\r' || echo "?")
+        if echo "$DEV" | grep -qE "^emulator-"; then
+            echo "     ${DEV}  ${BRAND} ${MODEL}  [에뮬레이터]"
+        else
+            echo "     ${DEV}  ${BRAND} ${MODEL}  [실제 기기]"
+        fi
+    done
+    echo ""
+    if [[ "${DEVICE_COUNT}" -gt 1 ]]; then
+        echo "   ⚠️  기기가 여러 개입니다. 사용할 기기를 선택하세요:"
+        echo "      bash scripts/local/select_device.sh"
+        echo "      또는: export ANDROID_SERIAL=<기기ID>"
+    fi
+else
+    echo "   → adb 미설치"
+fi
 
 echo ""
 echo "================================================================"
 echo " ✅ 로컬 PC 설정 완료"
 echo "================================================================"
 echo ""
-echo "  실행 방법:"
+echo "  ── 실행 방법 ──"
 echo ""
 echo "  1) 환경 준비:"
 echo "     source ${ENV_FILE}"
 echo "     source ${APPAGENT_VENV}/bin/activate"
 echo "     cd ${APPAGENT_DIR}"
 echo ""
-echo "  2) AppAgent 실행:"
-echo "     printf 'y\\n태스크 설명\\n' | python run.py --app <앱패키지명>"
+echo "  2) 기기 선택 (에뮬레이터 + 실제 기기 동시 사용 시):"
+echo "     eval \$(bash ${SCRIPT_DIR}/scripts/local/select_device.sh)"
 echo ""
-echo "  3) PoC 실험 실행:"
-echo "     cd ${SCRIPT_DIR}"
-echo "     # Control (Causal 없이)"
-echo "     CAUSAL_MODE=false python poc_experiment.py --scenario cart_add --mode control"
-echo "     # Treatment (Causal 있이)"
-echo "     CAUSAL_MODE=true  python poc_experiment.py --scenario cart_add --mode treatment"
-echo "     # 결과 비교"
-echo "     python poc_experiment.py --compare"
+echo "  3) AppAgent 실행:"
+echo "     python run.py --app <앱패키지명>"
 echo ""
-echo "  현재 ADB 기기 목록:"
-if command -v adb &>/dev/null; then
-    adb devices 2>/dev/null | tail -n +2 | grep -v "^$" | \
-        awk '{printf "     %s\n", $0}' || echo "     (없음)"
-else
-    echo "     adb 명령어를 찾을 수 없습니다 (Android Studio / SDK 설치 필요)."
-fi
+echo "  ── 실제 Samsung 기기 연결 ──"
+echo ""
+echo "  USB:    USB 케이블 연결 → bash ${SCRIPT_DIR}/scripts/local/connect_device.sh"
+echo "  무선:   bash ${SCRIPT_DIR}/scripts/local/connect_device.sh --wifi"
+echo ""
