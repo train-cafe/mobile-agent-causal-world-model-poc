@@ -348,18 +348,23 @@ python poc_experiment.py --check
 # 1) 시나리오 목록 확인
 python poc_experiment.py --scenarios
 
-# 2) Control (Causal OFF) — 3회
+# ── 방법 A: 전체 시나리오 한번에 실행 (권장) ──
+# 모든 시나리오를 control → treatment 순서로 실행하고 비교 리포트 자동 생성
+python poc_experiment.py --run-all --rounds 3
+
+# 특정 앱만 필터링해서 실행
+python poc_experiment.py --run-all --rounds 3 --filter settings,coupang
+
+# ── 방법 B: 개별 시나리오 실행 ──
 export CAUSAL_MODE=false WRAPPER_ENABLED=false
 python poc_experiment.py --scenario settings_developer_usb_debug --mode control --rounds 3
 
-# 3) Treatment (Causal ON) — 3회
 export CAUSAL_MODE=true WRAPPER_ENABLED=true
 python poc_experiment.py --scenario settings_developer_usb_debug --mode treatment --rounds 3
 
-# 4) 결과 비교
 python poc_experiment.py --compare --scenario settings_developer_usb_debug
 
-# 5) 저장된 결과 목록
+# 저장된 결과 목록
 python poc_experiment.py --list
 ```
 

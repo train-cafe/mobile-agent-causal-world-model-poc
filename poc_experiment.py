@@ -808,6 +808,230 @@ def _print_round_summary(results: dict, scenario: dict) -> None:
     print(f"{'='*60}\n")
 
 
+# ─── 전체 실행 (run-all) ─────────────────────────────────────────────────────
+
+def run_all(rounds: int, scenarios_filter: list[str] | None = None) -> None:
+    """
+    모든 시나리오를 control → treatment 순서로 실행하고,
+    전체 비교 리포트를 저장합니다.
+
+    Usage:
+        python poc_experiment.py --run-all --rounds 3
+        python poc_experiment.py --run-all --rounds 3 --filter settings,coupang
+    """
+    if not preflight_check():
+        sys.exit(1)
+
+    target_scenarios = list(SCENARIOS.keys())
+    if scenarios_filter:
+        target_scenarios = [
+            s for s in target_scenarios
+            if any(f in s for f in scenarios_filter)
+        ]
+        if not target_scenarios:
+            print(f"필터에 매칭되는 시나리오 없음: {scenarios_filter}")
+            sys.exit(1)
+
+    total = len(target_scenarios)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+
+    print(f"\n{'='*70}")
+    print(f" RUN-ALL: {total} scenarios x 2 modes x {rounds} rounds")
+    print(f" Total runs: {total * 2 * rounds}")
+    print(f"{'='*70}")
+    for i, name in enumerate(target_scenarios, 1):
+        print(f"  {i:>2}. {name}")
+    print()
+
+    all_results = {}  # {scenario_name: {"control": result, "treatment": result}}
+
+    for idx, scenario_name in enumerate(target_scenarios, 1):
+        for mode in ["control", "treatment"]:
+            print(f"\n{'#'*70}")
+            print(f" [{idx}/{total}] {scenario_name} — {mode.upper()}")
+            print(f"{'#'*70}")
+
+            result = run_scenario(scenario_name, mode, rounds)
+
+            if scenario_name not in all_results:
+                all_results[scenario_name] = {}
+            all_results[scenario_name][mode] = result
+
+    # ── 전체 비교 리포트 생성 + 저장 ──
+    report = _build_all_report(all_results, rounds, ts)
+    _print_all_report(report)
+
+    # JSON 저장
+    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    report_path = RESULTS_DIR / f"run_all_{ts}.json"
+    with open(report_path, "w", encoding="utf-8") as f:
+        json.dump(report, f, ensure_ascii=False, indent=2)
+    print(f"\nFull report saved: {report_path}")
+
+    # 텍스트 리포트 저장
+    txt_path = RESULTS_DIR / f"run_all_{ts}.txt"
+    _save_text_report(report, txt_path)
+    print(f"Text report saved: {txt_path}")
+
+
+def _build_all_report(all_results: dict, rounds: int, ts: str) -> dict:
+    """전체 비교 리포트 데이터 구조 생성."""
+    report = {
+        "timestamp": ts,
+        "rounds_per_scenario": rounds,
+        "total_scenarios": len(all_results),
+        "scenarios": {},
+        "summary": {
+            "control_success_total": 0,
+            "treatment_success_total": 0,
+            "control_rounds_total": 0,
+            "treatment_rounds_total": 0,
+            "control_errors_total": 0,
+            "treatment_errors_total": 0,
+            "control_avg_steps": 0,
+            "treatment_avg_steps": 0,
+        },
+    }
+
+    all_ctrl_steps = []
+    all_trt_steps = []
+
+    for scenario_name, modes in all_results.items():
+        ctrl = modes.get("control", {})
+        trt = modes.get("treatment", {})
+
+        ctrl_n = ctrl.get("rounds_completed", 0) or 1
+        trt_n = trt.get("rounds_completed", 0) or 1
+
+        ctrl_success = ctrl.get("success_count", 0)
+        trt_success = trt.get("success_count", 0)
+
+        ctrl_errors = sum(ctrl.get("error_counts", {}).values())
+        trt_errors = sum(trt.get("error_counts", {}).values())
+
+        ctrl_steps = [
+            rd.get("steps_used", 0)
+            for rd in ctrl.get("round_details", [])
+            if rd.get("steps_used")
+        ]
+        trt_steps = [
+            rd.get("steps_used", 0)
+            for rd in trt.get("round_details", [])
+            if rd.get("steps_used")
+        ]
+        all_ctrl_steps.extend(ctrl_steps)
+        all_trt_steps.extend(trt_steps)
+
+        report["scenarios"][scenario_name] = {
+            "control_success": ctrl_success,
+            "control_rounds": ctrl.get("rounds_completed", 0),
+            "control_errors": ctrl.get("error_counts", {}),
+            "control_avg_steps": round(sum(ctrl_steps) / len(ctrl_steps), 1) if ctrl_steps else 0,
+            "treatment_success": trt_success,
+            "treatment_rounds": trt.get("rounds_completed", 0),
+            "treatment_errors": trt.get("error_counts", {}),
+            "treatment_avg_steps": round(sum(trt_steps) / len(trt_steps), 1) if trt_steps else 0,
+        }
+
+        report["summary"]["control_success_total"] += ctrl_success
+        report["summary"]["treatment_success_total"] += trt_success
+        report["summary"]["control_rounds_total"] += ctrl.get("rounds_completed", 0)
+        report["summary"]["treatment_rounds_total"] += trt.get("rounds_completed", 0)
+        report["summary"]["control_errors_total"] += ctrl_errors
+        report["summary"]["treatment_errors_total"] += trt_errors
+
+    if all_ctrl_steps:
+        report["summary"]["control_avg_steps"] = round(sum(all_ctrl_steps) / len(all_ctrl_steps), 1)
+    if all_trt_steps:
+        report["summary"]["treatment_avg_steps"] = round(sum(all_trt_steps) / len(all_trt_steps), 1)
+
+    return report
+
+
+def _print_all_report(report: dict) -> None:
+    """전체 비교 리포트를 터미널에 출력."""
+    s = report["summary"]
+    ctrl_n = s["control_rounds_total"] or 1
+    trt_n = s["treatment_rounds_total"] or 1
+
+    print(f"\n{'='*80}")
+    print(f" FULL COMPARISON REPORT")
+    print(f" {report['total_scenarios']} scenarios x {report['rounds_per_scenario']} rounds")
+    print(f"{'='*80}")
+
+    # 시나리오별 테이블
+    print(f"\n {'Scenario':<35} {'Ctrl':>7} {'Trt':>7} {'Ctrl Err':>9} {'Trt Err':>9} {'Ctrl Stp':>9} {'Trt Stp':>9}")
+    print(f" {'─'*35} {'─'*7} {'─'*7} {'─'*9} {'─'*9} {'─'*9} {'─'*9}")
+
+    for name, data in report["scenarios"].items():
+        c_n = data["control_rounds"] or 1
+        t_n = data["treatment_rounds"] or 1
+        c_suc = f"{data['control_success']}/{data['control_rounds']}"
+        t_suc = f"{data['treatment_success']}/{data['treatment_rounds']}"
+        c_err = sum(data["control_errors"].values())
+        t_err = sum(data["treatment_errors"].values())
+        c_stp = data["control_avg_steps"] or "-"
+        t_stp = data["treatment_avg_steps"] or "-"
+        print(f" {name:<35} {c_suc:>7} {t_suc:>7} {c_err:>9} {t_err:>9} {str(c_stp):>9} {str(t_stp):>9}")
+
+    # 전체 요약
+    ctrl_pct = s["control_success_total"] / ctrl_n * 100
+    trt_pct = s["treatment_success_total"] / trt_n * 100
+    delta = trt_pct - ctrl_pct
+
+    print(f"\n{'─'*80}")
+    print(f" TOTALS")
+    print(f"{'─'*80}")
+    print(f"   {'':30} {'Control':>12} {'Treatment':>12} {'Delta':>12}")
+    print(f"   {'Success rate':<30} {s['control_success_total']}/{ctrl_n} ({ctrl_pct:.0f}%){'':<3} "
+          f"{s['treatment_success_total']}/{trt_n} ({trt_pct:.0f}%){'':<3} "
+          f"{'+' if delta >= 0 else ''}{delta:.1f}%p")
+    print(f"   {'Total errors':<30} {s['control_errors_total']:>12} {s['treatment_errors_total']:>12} "
+          f"{s['treatment_errors_total'] - s['control_errors_total']:>+12}")
+    print(f"   {'Avg steps':<30} {s['control_avg_steps']:>12} {s['treatment_avg_steps']:>12}")
+    print(f"{'='*80}\n")
+
+
+def _save_text_report(report: dict, path: Path) -> None:
+    """리포트를 읽기 좋은 텍스트 파일로 저장."""
+    lines = []
+    s = report["summary"]
+    ctrl_n = s["control_rounds_total"] or 1
+    trt_n = s["treatment_rounds_total"] or 1
+
+    lines.append(f"Causal World Model PoC — Full Comparison Report")
+    lines.append(f"Generated: {report['timestamp']}")
+    lines.append(f"Scenarios: {report['total_scenarios']}  Rounds/scenario: {report['rounds_per_scenario']}")
+    lines.append("")
+    lines.append(f"{'Scenario':<35} {'Ctrl Success':>13} {'Trt Success':>13} {'Ctrl Err':>9} {'Trt Err':>9}")
+    lines.append("─" * 80)
+
+    for name, data in report["scenarios"].items():
+        c_suc = f"{data['control_success']}/{data['control_rounds']}"
+        t_suc = f"{data['treatment_success']}/{data['treatment_rounds']}"
+        c_err = sum(data["control_errors"].values())
+        t_err = sum(data["treatment_errors"].values())
+        lines.append(f"{name:<35} {c_suc:>13} {t_suc:>13} {c_err:>9} {t_err:>9}")
+
+        # 오류 클래스 상세
+        all_errs = set(data["control_errors"].keys()) | set(data["treatment_errors"].keys())
+        for ec in sorted(all_errs):
+            ce = data["control_errors"].get(ec, 0)
+            te = data["treatment_errors"].get(ec, 0)
+            if ce or te:
+                lines.append(f"  {ec:<33} {ce:>13} {te:>13}")
+
+    lines.append("─" * 80)
+    ctrl_pct = s["control_success_total"] / ctrl_n * 100
+    trt_pct = s["treatment_success_total"] / trt_n * 100
+    lines.append(f"{'TOTAL':<35} {s['control_success_total']}/{ctrl_n} ({ctrl_pct:.0f}%){'':>4} "
+                 f"{s['treatment_success_total']}/{trt_n} ({trt_pct:.0f}%){'':>4} "
+                 f"{s['control_errors_total']:>9} {s['treatment_errors_total']:>9}")
+    lines.append(f"\nAvg steps: Control={s['control_avg_steps']}  Treatment={s['treatment_avg_steps']}")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
 # ─── 비교 리포트 ──────────────────────────────────────────────────────────────
 
 def compare_results(scenario_name: str) -> None:
@@ -942,13 +1166,16 @@ def main():
         epilog=__doc__,
     )
 
-    # Flat argument style (primary interface)
     parser.add_argument("--scenario", choices=list(SCENARIOS.keys()),
                         help="Scenario to run")
     parser.add_argument("--mode", choices=["control", "treatment"],
                         help="control=Causal OFF, treatment=Causal ON")
     parser.add_argument("--rounds", type=int, default=3,
-                        help="Number of rounds (default: 3)")
+                        help="Number of rounds per scenario (default: 3)")
+    parser.add_argument("--run-all", action="store_true",
+                        help="Run ALL scenarios (control + treatment) and save comparison report")
+    parser.add_argument("--filter", type=str, default="",
+                        help="Comma-separated keywords to filter scenarios for --run-all (e.g. settings,coupang)")
     parser.add_argument("--compare", action="store_true",
                         help="Compare control vs treatment results")
     parser.add_argument("--list", action="store_true",
@@ -964,6 +1191,9 @@ def main():
         print_scenarios()
     elif args.check:
         preflight_check()
+    elif args.run_all:
+        filt = [f.strip() for f in args.filter.split(",") if f.strip()] if args.filter else None
+        run_all(args.rounds, filt)
     elif args.compare:
         scenario = args.scenario or ""
         compare_results(scenario)
@@ -974,8 +1204,10 @@ def main():
     else:
         parser.print_help()
         print("\nQuick start:")
-        print("  python poc_experiment.py --scenarios              # 시나리오 목록")
         print("  python poc_experiment.py --check                  # 환경 점검")
+        print("  python poc_experiment.py --scenarios              # 시나리오 목록")
+        print("  python poc_experiment.py --run-all --rounds 3     # 전체 실행 + 비교 리포트")
+        print("  python poc_experiment.py --run-all --rounds 3 --filter settings,coupang")
         print("  python poc_experiment.py --scenario settings_developer_usb_debug --mode control --rounds 3")
 
 
