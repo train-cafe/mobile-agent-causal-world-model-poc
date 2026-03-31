@@ -1172,7 +1172,7 @@ def main():
                         help="control=Causal OFF, treatment=Causal ON")
     parser.add_argument("--rounds", type=int, default=3,
                         help="Number of rounds per scenario (default: 3)")
-    parser.add_argument("--run-all", action="store_true",
+    parser.add_argument("--run-all", "--run_all", action="store_true", dest="run_all",
                         help="Run ALL scenarios (control + treatment) and save comparison report")
     parser.add_argument("--filter", type=str, default="",
                         help="Comma-separated keywords to filter scenarios for --run-all (e.g. settings,coupang)")
