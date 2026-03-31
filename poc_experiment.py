@@ -563,97 +563,79 @@ def _run_single_round(
     """
     AppAgent의 task_executor.py를 직접 호출하여 한 라운드 실행.
 
-    AppAgent run.py는 os.system()으로 task_executor.py를 호출하는데,
-    이러면 subprocess의 stdin/stdout 캡처가 안 됨.
-    따라서 task_executor.py를 직접 실행합니다.
-
-    stdin 입력 순서:
-      1. docs 확인: "y" (no docs 사용)
-      2. task 설명: scenario["task"]
-    (기기가 1대이면 기기 선택 프롬프트 생략됨)
+    출력을 실시간으로 터미널에 표시하면서 동시에 캡처합니다.
+    AppAgent가 에뮬레이터에서 각 스텝을 실행하는 과정이 보여야 합니다.
     """
     python_bin = str(APPAGENT_VENV / "bin" / "python")
     task_script = str(APPAGENT_DIR / "scripts" / "task_executor.py")
     app = scenario["app_package"]
 
     if not Path(task_script).exists():
+        print(f"  ERROR: {task_script} not found")
         return _make_fail_result(round_idx, f"task_executor.py not found: {task_script}")
 
-    # stdin: docs(y) + task description
     task_text = scenario["task"]
     stdin_input = f"y\n{task_text}\n"
 
-    # 환경변수 구성 — 현재 쉘 환경을 상속하고 모드만 덮어쓰기
+    # 환경변수 구성
     env = os.environ.copy()
     env["CAUSAL_MODE"] = "true" if causal_enabled else "false"
     env["WRAPPER_ENABLED"] = "true" if causal_enabled else "false"
+    # PYTHONPATH에 scripts 디렉토리 추가 (import 보장)
+    scripts_dir = str(APPAGENT_DIR / "scripts")
+    env["PYTHONPATH"] = scripts_dir + ":" + env.get("PYTHONPATH", "")
 
     # task_executor.py 실행 전 task 디렉토리 목록 기록 (로그 파일 찾기용)
     tasks_dir = APPAGENT_DIR / "tasks"
     existing_tasks = set(tasks_dir.glob("task_*")) if tasks_dir.exists() else set()
 
     start_time = time.time()
-    print(f"  Executing: {python_bin} {task_script} --app {app}")
-    print(f"  Task: {task_text[:80]}{'...' if len(task_text) > 80 else ''}")
+    print(f"  CMD : {python_bin} {task_script} --app {app}")
+    print(f"  TASK: {task_text[:100]}{'...' if len(task_text) > 100 else ''}")
+    print(f"  {'─'*50}")
+
+    captured_output = []
 
     try:
-        proc = subprocess.run(
+        # Popen으로 실시간 출력 + 캡처
+        proc = subprocess.Popen(
             [python_bin, task_script, "--app", app],
-            input=stdin_input,
-            capture_output=True,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # stderr → stdout 합침
             text=True,
             env=env,
             cwd=str(APPAGENT_DIR),
-            timeout=ROUND_TIMEOUT,
+            bufsize=1,  # 라인 버퍼링
         )
+
+        # stdin 전송 후 닫기
+        proc.stdin.write(stdin_input)
+        proc.stdin.close()
+
+        # 실시간 출력 읽기
+        deadline = time.time() + ROUND_TIMEOUT
+        for line in iter(proc.stdout.readline, ""):
+            if time.time() > deadline:
+                proc.kill()
+                captured_output.append("[TIMEOUT] Round timeout reached\n")
+                break
+            captured_output.append(line)
+            # 실시간으로 터미널에 표시 (AppAgent 동작이 보여야 함)
+            sys.stdout.write(f"  | {line}")
+            sys.stdout.flush()
+
+        proc.stdout.close()
+        proc.wait(timeout=10)
         elapsed = time.time() - start_time
-        stdout = proc.stdout + proc.stderr
-
-        # AppAgent가 생성한 로그 파일 찾기
-        appagent_log = ""
-        new_tasks = set(tasks_dir.glob("task_*")) - existing_tasks if tasks_dir.exists() else set()
-        log_file = None
-        steps_used = 0
-        if new_tasks:
-            task_dir = max(new_tasks, key=lambda p: p.stat().st_mtime)
-            log_files = list(task_dir.glob("log_*.txt"))
-            if log_files:
-                log_file = log_files[0]
-                appagent_log = log_file.read_text(encoding="utf-8", errors="replace")
-                # 각 줄이 JSON → step 수 = 줄 수
-                steps_used = sum(1 for line in appagent_log.strip().splitlines() if line.strip())
-
-        # 성공 판정: stdout에서 "Task completed successfully" 확인
-        task_complete = "task completed successfully" in stdout.lower()
-
-        # 실패 사유 분류
-        failure_reason = ""
-        if not task_complete:
-            if proc.returncode != 0:
-                failure_reason = f"exit code {proc.returncode}"
-            elif "max rounds" in stdout.lower() or "reaching max" in stdout.lower():
-                failure_reason = "max rounds exhausted"
-            elif "no device found" in stdout.lower():
-                failure_reason = "ADB device not found"
-            elif "error" in stdout.lower().split("\n")[-3:]:
-                failure_reason = "runtime error"
-            else:
-                failure_reason = "task not completed (unexpected exit)"
-
-        return {
-            "round": round_idx,
-            "task_complete": task_complete,
-            "failure_reason": failure_reason,
-            "returncode": proc.returncode,
-            "steps_used": steps_used,
-            "elapsed_seconds": round(elapsed, 1),
-            "stdout": stdout[:10000],
-            "appagent_log": appagent_log[:20000],
-            "log_file": str(log_file) if log_file else "",
-        }
+        stdout = "".join(captured_output)
 
     except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
         elapsed = time.time() - start_time
+        stdout = "".join(captured_output) + "\n[TIMEOUT]\n"
+        print(f"  | [TIMEOUT after {ROUND_TIMEOUT}s]")
         return {
             "round": round_idx,
             "task_complete": False,
@@ -661,12 +643,59 @@ def _run_single_round(
             "returncode": -1,
             "steps_used": 0,
             "elapsed_seconds": round(elapsed, 1),
-            "stdout": "",
+            "stdout": stdout[:10000],
             "appagent_log": "",
             "log_file": "",
         }
     except Exception as e:
+        print(f"  | [ERROR] {e}")
         return _make_fail_result(round_idx, str(e))
+
+    print(f"  {'─'*50}")
+    print(f"  Exit code: {proc.returncode} | Elapsed: {elapsed:.1f}s")
+
+    # AppAgent가 생성한 로그 파일 찾기
+    appagent_log = ""
+    new_tasks = set(tasks_dir.glob("task_*")) - existing_tasks if tasks_dir.exists() else set()
+    log_file = None
+    steps_used = 0
+    if new_tasks:
+        task_dir = max(new_tasks, key=lambda p: p.stat().st_mtime)
+        log_files = list(task_dir.glob("log_*.txt"))
+        if log_files:
+            log_file = log_files[0]
+            appagent_log = log_file.read_text(encoding="utf-8", errors="replace")
+            steps_used = sum(1 for line in appagent_log.strip().splitlines() if line.strip())
+
+    # 성공 판정
+    task_complete = "task completed successfully" in stdout.lower()
+
+    # 실패 사유 분류
+    failure_reason = ""
+    if not task_complete:
+        if proc.returncode != 0:
+            # 마지막 몇 줄에서 실제 에러 메시지 추출
+            last_lines = stdout.strip().split("\n")[-5:]
+            error_hint = " | ".join(l.strip() for l in last_lines if l.strip())[:200]
+            failure_reason = f"exit code {proc.returncode}: {error_hint}"
+        elif "max rounds" in stdout.lower() or "reaching max" in stdout.lower():
+            failure_reason = "max rounds exhausted"
+        elif "no device found" in stdout.lower():
+            failure_reason = "ADB device not found"
+        else:
+            failure_reason = "task not completed"
+
+    return {
+        "round": round_idx,
+        "task_complete": task_complete,
+        "failure_reason": failure_reason,
+        "returncode": proc.returncode,
+        "steps_used": steps_used,
+        "elapsed_seconds": round(elapsed, 1),
+        "stdout": stdout[:10000],
+        "appagent_log": appagent_log[:20000],
+        "log_file": str(log_file) if log_file else "",
+    }
 
 
 def _make_fail_result(round_idx: int, reason: str) -> dict:
