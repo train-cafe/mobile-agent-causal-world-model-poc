@@ -5,25 +5,35 @@ poc_experiment.py — Causal World Model PoC 실험 실행기
 Control vs Treatment 비교를 자동화하여
 "VLM 스케일업으로 해결 불가능한 구조적 오류 클래스"를 측정합니다.
 
-Usage:
-    # Control (no Causal)
-    export CAUSAL_MODE=false WRAPPER_ENABLED=false
-    python poc_experiment.py --scenario maps_search_location --mode control --rounds 5
+실행 전 필수 환경:
+  1. 에뮬레이터/기기가 ADB에 연결되어 있어야 함 (adb devices)
+  2. SSH 터널 + vLLM 서버가 가동 중이어야 함
+  3. source ~/AppAgent/.env_appagent && source ~/appagent-env/bin/activate
 
-    # Treatment (Causal + Wrapper)
+Usage:
+    # Control (Causal OFF)
+    export CAUSAL_MODE=false WRAPPER_ENABLED=false
+    python poc_experiment.py --scenario settings_developer_usb_debug --mode control --rounds 3
+
+    # Treatment (Causal ON)
     export CAUSAL_MODE=true WRAPPER_ENABLED=true
-    python poc_experiment.py --scenario maps_search_location --mode treatment --rounds 5
+    python poc_experiment.py --scenario settings_developer_usb_debug --mode treatment --rounds 3
 
     # Compare results
-    python poc_experiment.py --compare --scenario maps_search_location
+    python poc_experiment.py --compare --scenario settings_developer_usb_debug
 
     # List saved results
     python poc_experiment.py --list
+
+    # List available scenarios
+    python poc_experiment.py --scenarios
 """
 
 import argparse
+import glob as glob_mod
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -34,6 +44,7 @@ from pathlib import Path
 RESULTS_DIR = Path(os.environ.get("RESULTS_DIR", "~/poc_results")).expanduser()
 APPAGENT_DIR = Path(os.environ.get("APPAGENT_DIR", "~/AppAgent")).expanduser()
 APPAGENT_VENV = Path(os.environ.get("APPAGENT_VENV", "~/appagent-env")).expanduser()
+ROUND_TIMEOUT = int(os.environ.get("ROUND_TIMEOUT", "600"))  # 라운드당 타임아웃 (초)
 
 # ─── 시나리오 정의 ────────────────────────────────────────────────────────────
 # 각 시나리오는 AppAgent에 전달할 태스크와 오류 감지 규칙을 정의합니다.
@@ -384,27 +395,120 @@ SCENARIOS: dict[str, dict] = {
 }
 
 
+# ─── 환경 검증 ───────────────────────────────────────────────────────────────
+
+def _check_adb() -> tuple[bool, str]:
+    """ADB 기기 연결 확인. (connected, detail_msg) 반환."""
+    try:
+        result = subprocess.run(
+            ["adb", "devices"], capture_output=True, text=True, timeout=5
+        )
+        lines = [l.strip() for l in result.stdout.splitlines()
+                 if l.strip() and "List of devices" not in l
+                 and not l.startswith("*")]
+        devices = [l for l in lines if "device" in l.split()[-1:]]
+        if not devices:
+            return False, "adb devices 출력에 연결된 기기 없음"
+        return True, f"연결 기기: {', '.join(d.split()[0] for d in devices)}"
+    except FileNotFoundError:
+        return False, "adb 명령어를 찾을 수 없음 (PATH에 adb 미포함)"
+    except Exception as e:
+        return False, f"adb 실행 오류: {e}"
+
+
+def _check_vllm() -> tuple[bool, str]:
+    """vLLM 서버 연결 확인."""
+    base_url = os.environ.get("OPENAI_BASE_URL", "")
+    if not base_url:
+        return False, "OPENAI_BASE_URL 미설정 (source .env_appagent 필요)"
+    health_url = base_url.replace("/v1", "") + "/health"
+    try:
+        result = subprocess.run(
+            ["curl", "-s", "-o", "/dev/null", "-w", "%{http_code}",
+             "--connect-timeout", "5", health_url],
+            capture_output=True, text=True, timeout=10
+        )
+        code = result.stdout.strip()
+        if code == "200":
+            return True, f"vLLM 정상 ({health_url})"
+        return False, f"vLLM 응답 코드 {code} ({health_url})"
+    except Exception as e:
+        return False, f"vLLM 연결 실패 ({health_url}): {e}"
+
+
+def _check_appagent() -> tuple[bool, str]:
+    """AppAgent 설치 + 패치 상태 확인."""
+    task_exec = APPAGENT_DIR / "scripts" / "task_executor.py"
+    if not task_exec.exists():
+        return False, f"task_executor.py 없음: {task_exec}"
+    content = task_exec.read_text(encoding="utf-8")
+    if "# [CAUSAL_PATCH]" not in content:
+        return False, "task_executor.py에 Causal 패치 미적용"
+    config_yaml = APPAGENT_DIR / "config.yaml"
+    if not config_yaml.exists():
+        return False, f"config.yaml 없음: {config_yaml}"
+    return True, "AppAgent + 패치 확인됨"
+
+
+def preflight_check() -> bool:
+    """실행 전 환경 점검. 실패 시 구체적 안내 출력."""
+    print(f"{'─'*60}")
+    print(" Preflight Check")
+    print(f"{'─'*60}")
+
+    all_ok = True
+    checks = [
+        ("ADB 기기", _check_adb),
+        ("vLLM 서버", _check_vllm),
+        ("AppAgent", _check_appagent),
+    ]
+    for name, check_fn in checks:
+        ok, msg = check_fn()
+        status = "OK" if ok else "FAIL"
+        icon = "  [+]" if ok else "  [!]"
+        print(f"{icon} {name:<15} {status}  — {msg}")
+        if not ok:
+            all_ok = False
+
+    # 환경변수 상태 (정보용)
+    causal = os.environ.get("CAUSAL_MODE", "(unset)")
+    wrapper = os.environ.get("WRAPPER_ENABLED", "(unset)")
+    print(f"  [i] CAUSAL_MODE    = {causal}")
+    print(f"  [i] WRAPPER_ENABLED= {wrapper}")
+    print(f"{'─'*60}")
+
+    if not all_ok:
+        print("\n실행할 수 없습니다. 위 오류를 해결한 후 다시 시도하세요.")
+        print("  힌트:")
+        print("    source ~/AppAgent/.env_appagent")
+        print("    source ~/appagent-env/bin/activate")
+        print("    adb devices  # 기기 확인")
+        print("    curl http://127.0.0.1:8080/health  # vLLM 확인")
+    return all_ok
+
+
 # ─── 실행 로직 ────────────────────────────────────────────────────────────────
 
 def run_scenario(scenario_name: str, mode: str, rounds: int) -> dict:
-    """
-    AppAgent 를 실행하고 오류 클래스별 발생 횟수를 기록합니다.
-
-    실제 AppAgent 실행은 ADB 연결 및 에뮬레이터가 필요합니다.
-    에뮬레이터 없이 실행하면 dry_run 모드로 구조만 테스트합니다.
-    """
+    """AppAgent를 에뮬레이터 위에서 실제 실행하고 로그를 분석합니다."""
     if scenario_name not in SCENARIOS:
-        print(f"❌ 알 수 없는 시나리오: {scenario_name}")
-        print(f"   사용 가능: {list(SCENARIOS.keys())}")
+        print(f"알 수 없는 시나리오: {scenario_name}")
+        print(f"사용 가능: {', '.join(SCENARIOS.keys())}")
+        sys.exit(1)
+
+    if not preflight_check():
         sys.exit(1)
 
     scenario = SCENARIOS[scenario_name]
     causal_enabled = mode == "treatment"
 
     print(f"\n{'='*60}")
-    print(f" 시나리오: {scenario['description']}")
-    print(f" 모드: {mode.upper()} (CAUSAL_MODE={'true' if causal_enabled else 'false'})")
-    print(f" 반복 횟수: {rounds}")
+    print(f" Scenario : {scenario['description']}")
+    print(f" Mode     : {mode.upper()}")
+    print(f" CAUSAL   : {'ON' if causal_enabled else 'OFF'}")
+    print(f" WRAPPER  : {'ON' if causal_enabled else 'OFF'}")
+    print(f" Rounds   : {rounds}")
+    print(f" Timeout  : {ROUND_TIMEOUT}s per round")
     print(f"{'='*60}\n")
 
     results = {
@@ -416,39 +520,36 @@ def run_scenario(scenario_name: str, mode: str, rounds: int) -> dict:
         "rounds_completed": 0,
         "success_count": 0,
         "error_counts": {ec: 0 for ec in scenario["error_classes"]},
-        "round_logs": [],
+        "round_details": [],
     }
 
-    # ADB 연결 확인
-    adb_available = _check_adb()
-    if not adb_available:
-        print("⚠️  ADB 기기가 연결되지 않았습니다.")
-        print("   dry_run 모드: 실제 AppAgent 실행 없이 결과 구조만 확인합니다.")
-        results["dry_run"] = True
-        RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-        _save_results(results, scenario_name, mode)
-        return results
-
-    env = os.environ.copy()
-    env["CAUSAL_MODE"] = "true" if causal_enabled else "false"
-
     for round_idx in range(1, rounds + 1):
-        print(f"[Round {round_idx}/{rounds}] 시작...")
-        round_result = _run_single_round(scenario, env, round_idx)
-        results["round_logs"].append(round_result)
+        print(f"\n[Round {round_idx}/{rounds}] {'─'*40}")
+
+        # 앱 강제 종료 후 재시작
+        _reset_app(scenario["app_package"])
+        time.sleep(1)
+        _launch_app(scenario["app_package"])
+        time.sleep(3)  # 앱 시작 대기
+
+        round_result = _run_single_round(scenario, round_idx, causal_enabled)
+        results["round_details"].append(round_result)
         results["rounds_completed"] += 1
 
-        if round_result.get("success"):
+        # 결과 판정
+        if round_result["task_complete"]:
             results["success_count"] += 1
+            print(f"  Result: SUCCESS ({round_result['steps_used']} steps)")
+        else:
+            reason = round_result.get("failure_reason", "unknown")
+            print(f"  Result: FAIL — {reason} ({round_result['steps_used']} steps)")
 
-        for error_class, error_info in scenario["error_classes"].items():
-            if _detect_error(round_result["log"], error_info):
-                results["error_counts"][error_class] += 1
-                print(f"   ⚠️  오류 감지: {error_class} — {error_info['description']}")
-
-        # 에뮬레이터 상태 리셋 (앱 재시작)
-        _reset_app(scenario["app_package"])
-        time.sleep(2)
+        # 오류 클래스 감지
+        combined_log = round_result["stdout"] + round_result.get("appagent_log", "")
+        for ec_name, ec_info in scenario["error_classes"].items():
+            if _detect_error(combined_log, ec_info):
+                results["error_counts"][ec_name] += 1
+                print(f"  Error detected: {ec_name} — {ec_info['description']}")
 
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     _save_results(results, scenario_name, mode)
@@ -456,47 +557,171 @@ def run_scenario(scenario_name: str, mode: str, rounds: int) -> dict:
     return results
 
 
-def _run_single_round(scenario: dict, env: dict, round_idx: int) -> dict:
-    """AppAgent 를 한 번 실행하고 로그를 캡처합니다."""
+def _run_single_round(
+    scenario: dict, round_idx: int, causal_enabled: bool
+) -> dict:
+    """
+    AppAgent의 task_executor.py를 직접 호출하여 한 라운드 실행.
+
+    출력을 실시간으로 터미널에 표시하면서 동시에 캡처합니다.
+    AppAgent가 에뮬레이터에서 각 스텝을 실행하는 과정이 보여야 합니다.
+    """
     python_bin = str(APPAGENT_VENV / "bin" / "python")
-    run_script = str(APPAGENT_DIR / "run.py")
-
-    if not Path(run_script).exists():
-        return {"success": False, "log": "", "error": f"run.py not found: {run_script}"}
-
-    task = scenario["task"]
+    task_script = str(APPAGENT_DIR / "scripts" / "task_executor.py")
     app = scenario["app_package"]
-    stdin_input = f"y\n{task}\n"
+
+    if not Path(task_script).exists():
+        print(f"  ERROR: {task_script} not found")
+        return _make_fail_result(round_idx, f"task_executor.py not found: {task_script}")
+
+    task_text = scenario["task"]
+    stdin_input = f"y\n{task_text}\n"
+
+    # 환경변수 구성
+    env = os.environ.copy()
+    env["CAUSAL_MODE"] = "true" if causal_enabled else "false"
+    env["WRAPPER_ENABLED"] = "true" if causal_enabled else "false"
+    # PYTHONPATH에 scripts 디렉토리 추가 (import 보장)
+    scripts_dir = str(APPAGENT_DIR / "scripts")
+    env["PYTHONPATH"] = scripts_dir + ":" + env.get("PYTHONPATH", "")
+
+    # task_executor.py 실행 전 task 디렉토리 목록 기록 (로그 파일 찾기용)
+    tasks_dir = APPAGENT_DIR / "tasks"
+    existing_tasks = set(tasks_dir.glob("task_*")) if tasks_dir.exists() else set()
+
+    start_time = time.time()
+    print(f"  CMD : {python_bin} {task_script} --app {app}")
+    print(f"  TASK: {task_text[:100]}{'...' if len(task_text) > 100 else ''}")
+    print(f"  {'─'*50}")
+
+    captured_output = []
 
     try:
-        proc = subprocess.run(
-            [python_bin, run_script, "--app", app],
-            input=stdin_input,
-            capture_output=True,
+        # Popen으로 실시간 출력 + 캡처
+        proc = subprocess.Popen(
+            [python_bin, task_script, "--app", app],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,  # stderr → stdout 합침
             text=True,
             env=env,
             cwd=str(APPAGENT_DIR),
-            timeout=300,   # 5분 타임아웃
+            bufsize=1,  # 라인 버퍼링
         )
-        log = proc.stdout + proc.stderr
-        success = any(kw.lower() in log.lower() for kw in scenario["success_keywords"])
+
+        # stdin 전송 후 닫기
+        proc.stdin.write(stdin_input)
+        proc.stdin.close()
+
+        # 실시간 출력 읽기
+        deadline = time.time() + ROUND_TIMEOUT
+        for line in iter(proc.stdout.readline, ""):
+            if time.time() > deadline:
+                proc.kill()
+                captured_output.append("[TIMEOUT] Round timeout reached\n")
+                break
+            captured_output.append(line)
+            # 실시간으로 터미널에 표시 (AppAgent 동작이 보여야 함)
+            sys.stdout.write(f"  | {line}")
+            sys.stdout.flush()
+
+        proc.stdout.close()
+        proc.wait(timeout=10)
+        elapsed = time.time() - start_time
+        stdout = "".join(captured_output)
+
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        elapsed = time.time() - start_time
+        stdout = "".join(captured_output) + "\n[TIMEOUT]\n"
+        print(f"  | [TIMEOUT after {ROUND_TIMEOUT}s]")
         return {
             "round": round_idx,
-            "success": success,
-            "returncode": proc.returncode,
-            "log": log[:8000],   # 로그 최대 8KB
+            "task_complete": False,
+            "failure_reason": f"timeout ({ROUND_TIMEOUT}s)",
+            "returncode": -1,
+            "steps_used": 0,
+            "elapsed_seconds": round(elapsed, 1),
+            "stdout": stdout[:10000],
+            "appagent_log": "",
+            "log_file": "",
         }
-    except subprocess.TimeoutExpired:
-        return {"round": round_idx, "success": False, "log": "", "error": "timeout"}
     except Exception as e:
-        return {"round": round_idx, "success": False, "log": "", "error": str(e)}
+        print(f"  | [ERROR] {e}")
+        return _make_fail_result(round_idx, str(e))
+
+    print(f"  {'─'*50}")
+    print(f"  Exit code: {proc.returncode} | Elapsed: {elapsed:.1f}s")
+
+    # AppAgent가 생성한 로그 파일 찾기
+    appagent_log = ""
+    new_tasks = set(tasks_dir.glob("task_*")) - existing_tasks if tasks_dir.exists() else set()
+    log_file = None
+    steps_used = 0
+    if new_tasks:
+        task_dir = max(new_tasks, key=lambda p: p.stat().st_mtime)
+        log_files = list(task_dir.glob("log_*.txt"))
+        if log_files:
+            log_file = log_files[0]
+            appagent_log = log_file.read_text(encoding="utf-8", errors="replace")
+            steps_used = sum(1 for line in appagent_log.strip().splitlines() if line.strip())
+
+    # 성공 판정
+    task_complete = "task completed successfully" in stdout.lower()
+
+    # 실패 사유 분류
+    failure_reason = ""
+    if not task_complete:
+        if proc.returncode != 0:
+            # 마지막 몇 줄에서 실제 에러 메시지 추출
+            last_lines = stdout.strip().split("\n")[-5:]
+            error_hint = " | ".join(l.strip() for l in last_lines if l.strip())[:200]
+            failure_reason = f"exit code {proc.returncode}: {error_hint}"
+        elif "max rounds" in stdout.lower() or "reaching max" in stdout.lower():
+            failure_reason = "max rounds exhausted"
+        elif "no device found" in stdout.lower():
+            failure_reason = "ADB device not found"
+        else:
+            failure_reason = "task not completed"
+
+    return {
+        "round": round_idx,
+        "task_complete": task_complete,
+        "failure_reason": failure_reason,
+        "returncode": proc.returncode,
+        "steps_used": steps_used,
+        "elapsed_seconds": round(elapsed, 1),
+        "stdout": stdout[:10000],
+        "appagent_log": appagent_log[:20000],
+        "log_file": str(log_file) if log_file else "",
+    }
+
+
+def _make_fail_result(round_idx: int, reason: str) -> dict:
+    return {
+        "round": round_idx,
+        "task_complete": False,
+        "failure_reason": reason,
+        "returncode": -1,
+        "steps_used": 0,
+        "elapsed_seconds": 0,
+        "stdout": "",
+        "appagent_log": "",
+        "log_file": "",
+    }
 
 
 def _detect_error(log: str, error_info: dict) -> bool:
     """로그에서 특정 오류 클래스 패턴을 감지합니다."""
+    if not log:
+        return False
     log_lower = log.lower()
     log_patterns = error_info.get("log_patterns", [])
     context_patterns = error_info.get("context_patterns", [])
+
+    if not log_patterns:
+        return False
 
     has_log_pattern = any(p.lower() in log_lower for p in log_patterns if p)
     if not context_patterns:
@@ -506,20 +731,8 @@ def _detect_error(log: str, error_info: dict) -> bool:
     return has_log_pattern and has_context
 
 
-def _check_adb() -> bool:
-    try:
-        result = subprocess.run(
-            ["adb", "devices"],
-            capture_output=True, text=True, timeout=5
-        )
-        lines = [l.strip() for l in result.stdout.splitlines()
-                 if l.strip() and "List of devices" not in l]
-        return len(lines) > 0
-    except Exception:
-        return False
-
-
 def _reset_app(package: str) -> None:
+    """앱 강제 종료."""
     try:
         subprocess.run(
             ["adb", "shell", "am", "force-stop", package],
@@ -529,27 +742,69 @@ def _reset_app(package: str) -> None:
         pass
 
 
+def _launch_app(package: str) -> None:
+    """앱 메인 액티비티 시작."""
+    try:
+        subprocess.run(
+            ["adb", "shell", "monkey", "-p", package,
+             "-c", "android.intent.category.LAUNCHER", "1"],
+            capture_output=True, timeout=5
+        )
+    except Exception:
+        pass
+
+
 def _save_results(results: dict, scenario_name: str, mode: str) -> None:
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     filename = RESULTS_DIR / f"{scenario_name}_{mode}_{ts}.json"
+
+    # round_details의 stdout/appagent_log를 별도 파일로 분리 (JSON 크기 관리)
+    details_dir = RESULTS_DIR / "logs"
+    details_dir.mkdir(parents=True, exist_ok=True)
+    for rd in results.get("round_details", []):
+        round_n = rd.get("round", 0)
+        # stdout/appagent_log → 별도 파일, 결과 JSON에는 경로만 기록
+        for key in ("stdout", "appagent_log"):
+            content = rd.get(key, "")
+            if len(content) > 500:
+                log_filename = f"{scenario_name}_{mode}_{ts}_r{round_n}_{key}.txt"
+                log_path = details_dir / log_filename
+                log_path.write_text(content, encoding="utf-8")
+                rd[key] = f"[see logs/{log_filename}]"
+
     with open(filename, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
-    print(f"\n결과 저장: {filename}")
+    print(f"\nResults saved: {filename}")
 
 
 def _print_round_summary(results: dict, scenario: dict) -> None:
     n = results["rounds_completed"]
+    if n == 0:
+        print("No rounds completed.")
+        return
+
     print(f"\n{'='*60}")
-    print(f" {results['mode'].upper()} 모드 결과 요약")
+    print(f" {results['mode'].upper()} Mode — {results['scenario']}")
     print(f"{'='*60}")
-    print(f" 완료 라운드: {n}/{results['rounds_total']}")
-    print(f" 성공: {results['success_count']}/{n} "
-          f"({results['success_count']/n*100:.0f}%)" if n else " 성공: 0/0")
-    print(f"\n 오류 클래스별 발생률:")
+    print(f" Rounds    : {n}/{results['rounds_total']}")
+    success_pct = results['success_count'] / n * 100
+    print(f" Success   : {results['success_count']}/{n} ({success_pct:.0f}%)")
+
+    # 평균 step 수
+    steps = [rd.get("steps_used", 0) for rd in results.get("round_details", []) if rd.get("steps_used")]
+    if steps:
+        print(f" Avg steps : {sum(steps)/len(steps):.1f}")
+
+    # 평균 소요 시간
+    times = [rd.get("elapsed_seconds", 0) for rd in results.get("round_details", []) if rd.get("elapsed_seconds")]
+    if times:
+        print(f" Avg time  : {sum(times)/len(times):.1f}s")
+
+    print(f"\n Error class breakdown:")
     for ec, count in results["error_counts"].items():
         desc = scenario["error_classes"][ec]["description"]
-        rate = f"{count}/{n}" if n else "0/0"
-        print(f"   {ec:<25} {rate:<8} — {desc}")
+        pct = count / n * 100
+        print(f"   {ec:<30} {count}/{n} ({pct:4.0f}%)  {desc}")
     print(f"{'='*60}\n")
 
 
@@ -667,52 +922,61 @@ def list_results() -> None:
 
 # ─── CLI ─────────────────────────────────────────────────────────────────────
 
+def print_scenarios() -> None:
+    """사용 가능한 시나리오 목록 출력."""
+    print(f"\n{'─'*70}")
+    print(f" {'Scenario':<35} {'App':<30} {'Steps':>5}")
+    print(f"{'─'*70}")
+    for name, s in SCENARIOS.items():
+        pkg = s["app_package"].split(".")[-1]
+        steps = s.get("expected_steps", "?")
+        print(f" {name:<35} {pkg:<30} {steps:>5}")
+    print(f"{'─'*70}")
+    print(f" Total: {len(SCENARIOS)} scenarios\n")
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Causal World Model PoC 실험 실행기",
+        description="Causal World Model PoC Experiment Runner",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=__doc__,
     )
-    subparsers = parser.add_subparsers(dest="command")
 
-    # run subcommand (default)
-    run_p = subparsers.add_parser("run", help="시나리오 실행")
-    run_p.add_argument("--scenario", required=True, choices=list(SCENARIOS.keys()),
-                       help="실행할 시나리오")
-    run_p.add_argument("--mode", required=True, choices=["control", "treatment"],
-                       help="control=Causal 없이, treatment=Causal 있이")
-    run_p.add_argument("--rounds", type=int, default=5,
-                       help="반복 횟수 (기본값: 5)")
-
-    # compare subcommand
-    cmp_p = subparsers.add_parser("compare", help="Control vs Treatment 결과 비교")
-    cmp_p.add_argument("--scenario", default="", help="특정 시나리오만 비교 (생략 시 전체)")
-
-    # list subcommand
-    subparsers.add_parser("list", help="저장된 결과 목록 출력")
-
-    # Legacy flat argument style for convenience
-    # python poc_experiment.py --scenario X --mode Y --rounds N
-    parser.add_argument("--scenario", choices=list(SCENARIOS.keys()))
-    parser.add_argument("--mode", choices=["control", "treatment"])
-    parser.add_argument("--rounds", type=int, default=5)
-    parser.add_argument("--compare", action="store_true")
-    parser.add_argument("--list", action="store_true")
+    # Flat argument style (primary interface)
+    parser.add_argument("--scenario", choices=list(SCENARIOS.keys()),
+                        help="Scenario to run")
+    parser.add_argument("--mode", choices=["control", "treatment"],
+                        help="control=Causal OFF, treatment=Causal ON")
+    parser.add_argument("--rounds", type=int, default=3,
+                        help="Number of rounds (default: 3)")
+    parser.add_argument("--compare", action="store_true",
+                        help="Compare control vs treatment results")
+    parser.add_argument("--list", action="store_true",
+                        help="List saved results")
+    parser.add_argument("--scenarios", action="store_true",
+                        help="List available scenarios")
+    parser.add_argument("--check", action="store_true",
+                        help="Run preflight check only")
 
     args = parser.parse_args()
 
-    if args.command == "compare" or args.compare:
-        scenario = getattr(args, "scenario", "") or ""
+    if args.scenarios:
+        print_scenarios()
+    elif args.check:
+        preflight_check()
+    elif args.compare:
+        scenario = args.scenario or ""
         compare_results(scenario)
-    elif args.command == "list" or args.list:
+    elif args.list:
         list_results()
-    elif args.command == "run" or (args.scenario and args.mode):
-        scenario = args.scenario
-        mode = args.mode
-        rounds = args.rounds
-        run_scenario(scenario, mode, rounds)
+    elif args.scenario and args.mode:
+        run_scenario(args.scenario, args.mode, args.rounds)
     else:
         parser.print_help()
+        print("\nQuick start:")
+        print("  python poc_experiment.py --scenarios              # 시나리오 목록")
+        print("  python poc_experiment.py --check                  # 환경 점검")
+        print("  python poc_experiment.py --scenario settings_developer_usb_debug --mode control --rounds 3")
 
 
 if __name__ == "__main__":

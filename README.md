@@ -342,20 +342,31 @@ source ~/AppAgent/.env_appagent
 source ~/appagent-env/bin/activate
 cd ~/PythonProgramming/mobile-agent-causal-world-model-poc
 
-# Control (Causal 없이) — 5회
+# 0) 환경 점검 (ADB, vLLM, AppAgent 패치 상태 확인)
+python poc_experiment.py --check
+
+# 1) 시나리오 목록 확인
+python poc_experiment.py --scenarios
+
+# 2) Control (Causal OFF) — 3회
 export CAUSAL_MODE=false WRAPPER_ENABLED=false
-python poc_experiment.py --scenario maps_search_location --mode control --rounds 5
+python poc_experiment.py --scenario settings_developer_usb_debug --mode control --rounds 3
 
-# Treatment (Causal + Wrapper) — 5회
+# 3) Treatment (Causal ON) — 3회
 export CAUSAL_MODE=true WRAPPER_ENABLED=true
-python poc_experiment.py --scenario maps_search_location --mode treatment --rounds 5
+python poc_experiment.py --scenario settings_developer_usb_debug --mode treatment --rounds 3
 
-# 결과 비교
-python poc_experiment.py --compare --scenario maps_search_location
+# 4) 결과 비교
+python poc_experiment.py --compare --scenario settings_developer_usb_debug
 
-# 전체 시나리오 목록 확인
-python poc_experiment.py --help
+# 5) 저장된 결과 목록
+python poc_experiment.py --list
 ```
+
+> **실행 전 필수**: `--check`로 환경 점검을 먼저 하세요. ADB 미연결, vLLM 미응답, 패치 미적용 시 즉시 안내합니다.
+> 
+> 라운드당 약 3~10분 소요됩니다 (VLM 응답 속도 + 앱 복잡도에 따라).
+> 타임아웃 기본값 600초, `ROUND_TIMEOUT=300` 환경변수로 조정 가능.
 
 ### 시나리오 목록
 
