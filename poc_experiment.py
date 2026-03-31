@@ -5,17 +5,19 @@ poc_experiment.py — Causal World Model PoC 실험 실행기
 Control vs Treatment 비교를 자동화하여
 "VLM 스케일업으로 해결 불가능한 구조적 오류 클래스"를 측정합니다.
 
-사용법:
-    # Control (Causal 없이)
-    CAUSAL_MODE=false python poc_experiment.py --scenario cart_add --mode control --rounds 5
+Usage:
+    # Control (no Causal)
+    export CAUSAL_MODE=false WRAPPER_ENABLED=false
+    python poc_experiment.py --scenario maps_search_location --mode control --rounds 5
 
-    # Treatment (Causal 있이)
-    CAUSAL_MODE=true  python poc_experiment.py --scenario cart_add --mode treatment --rounds 5
+    # Treatment (Causal + Wrapper)
+    export CAUSAL_MODE=true WRAPPER_ENABLED=true
+    python poc_experiment.py --scenario maps_search_location --mode treatment --rounds 5
 
-    # 결과 비교
-    python poc_experiment.py --compare
+    # Compare results
+    python poc_experiment.py --compare --scenario maps_search_location
 
-    # 저장된 결과 목록
+    # List saved results
     python poc_experiment.py --list
 """
 
@@ -36,42 +38,247 @@ APPAGENT_VENV = Path(os.environ.get("APPAGENT_VENV", "~/appagent-env")).expandus
 # ─── 시나리오 정의 ────────────────────────────────────────────────────────────
 # 각 시나리오는 AppAgent에 전달할 태스크와 오류 감지 규칙을 정의합니다.
 SCENARIOS: dict[str, dict] = {
-    "cart_add": {
-        "description": "배달 앱에서 음식 메뉴를 장바구니에 담기",
-        "app_package": "com.example.delivery",   # 실제 앱 패키지명으로 교체
-        "task": "배달 앱에서 짜장면을 장바구니에 1개 담아줘",
-        "success_keywords": ["장바구니", "담기 완료", "added to cart"],
+    # ── Settings (기본 앱) ───────────────────────────────────────────
+    "settings_wifi": {
+        "description": "Navigate to Wi-Fi settings",
+        "app_package": "com.android.settings",
+        "task": "Open the Wi-Fi settings menu",
+        "success_keywords": ["Wi-Fi", "WiFi", "wireless", "network"],
         "error_classes": {
-            "wrong_button": {
-                "description": "바로구매 버튼을 담기로 오인",
-                "log_patterns": ["바로구매", "buy now", "즉시구매"],
+            "wrong_menu": {
+                "description": "Entered a different settings menu instead of Wi-Fi",
+                "log_patterns": ["Bluetooth", "Display", "Battery"],
             },
             "premature_finish": {
-                "description": "장바구니 확인 팝업 상태에서 FINISH 오판",
-                "log_patterns": ["FINISH", "Task completed"],
-                # premature = FINISH 직전 last_act 에 popup 패턴 포함
-                "context_patterns": ["장바구니에 추가", "added to cart"],
-            },
-            "missing_option": {
-                "description": "필수 옵션 미선택 상태에서 담기 시도",
-                "log_patterns": ["옵션을 선택", "필수 옵션", "option required", "please select"],
+                "description": "Declared FINISH while still on the settings home screen",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["Settings", "Search settings"],
             },
         },
     },
-    "settings_wifi": {
-        "description": "설정 앱에서 WiFi 메뉴 열기 (기본 동작 검증용)",
+    "settings_display_brightness": {
+        "description": "Navigate to display settings and adjust brightness",
         "app_package": "com.android.settings",
-        "task": "설정에서 WiFi 메뉴로 이동해줘",
-        "success_keywords": ["Wi-Fi", "WiFi", "무선 네트워크"],
+        "task": "Go to Display settings and set the brightness to maximum",
+        "success_keywords": ["brightness", "Display", "screen"],
         "error_classes": {
             "wrong_menu": {
-                "description": "WiFi 대신 다른 설정 메뉴 진입",
+                "description": "Opened wrong settings submenu",
+                "log_patterns": [],
+            },
+            "loop_stuck": {
+                "description": "Repeated the same action without progress",
+                "log_patterns": ["[SKIPPED]", "[BLOCKED]", "StateTransition FAIL"],
+            },
+        },
+    },
+    "settings_airplane_mode": {
+        "description": "Toggle airplane mode on",
+        "app_package": "com.android.settings",
+        "task": "Enable airplane mode in the network settings",
+        "success_keywords": ["Airplane", "Flight mode"],
+        "error_classes": {
+            "premature_finish": {
+                "description": "FINISH before actually toggling airplane mode",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["Network", "Internet"],
+            },
+        },
+    },
+
+    # ── Google Maps ──────────────────────────────────────────────────
+    "maps_search_location": {
+        "description": "Search for a location in Google Maps",
+        "app_package": "com.google.android.apps.maps",
+        "task": "Search for 'Tokyo Tower' in Google Maps and show the result",
+        "success_keywords": ["Tokyo Tower", "search", "directions"],
+        "error_classes": {
+            "invalid_element": {
+                "description": "VLM referenced a non-existent UI element (IndexError)",
+                "log_patterns": ["[Guard]", "[SKIPPED]", "elem_list"],
+            },
+            "wrong_action": {
+                "description": "Tapped wrong element instead of search bar",
                 "log_patterns": [],
             },
             "premature_finish": {
-                "description": "설정 홈에서 FINISH 오판",
+                "description": "Declared FINISH before search results appeared",
                 "log_patterns": ["FINISH"],
-                "context_patterns": ["Settings", "설정"],
+                "context_patterns": ["Search here", "Explore"],
+            },
+        },
+    },
+    "maps_get_directions": {
+        "description": "Get directions between two locations in Google Maps",
+        "app_package": "com.google.android.apps.maps",
+        "task": "Get directions from Central Park to Times Square in Google Maps",
+        "success_keywords": ["directions", "route", "min", "miles", "km"],
+        "error_classes": {
+            "invalid_element": {
+                "description": "VLM referenced a non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            },
+            "loop_stuck": {
+                "description": "Stuck in a loop without making progress",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
+            },
+        },
+    },
+
+    # ── Google Chrome ────────────────────────────────────────────────
+    "chrome_search": {
+        "description": "Search for something in Google Chrome",
+        "app_package": "com.android.chrome",
+        "task": "Open Chrome and search for 'weather in Seoul' using Google",
+        "success_keywords": ["weather", "Seoul", "search", "results"],
+        "error_classes": {
+            "invalid_element": {
+                "description": "VLM referenced a non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            },
+            "premature_finish": {
+                "description": "FINISH before search results loaded",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["Search or type", "address bar"],
+            },
+        },
+    },
+
+    # ── Google Clock ─────────────────────────────────────────────────
+    "clock_set_alarm": {
+        "description": "Set a new alarm in Google Clock",
+        "app_package": "com.google.android.deskclock",
+        "task": "Create a new alarm for 7:30 AM in the Clock app",
+        "success_keywords": ["7:30", "alarm", "AM"],
+        "error_classes": {
+            "wrong_action": {
+                "description": "Interacted with timer/stopwatch instead of alarm",
+                "log_patterns": ["Timer", "Stopwatch"],
+            },
+            "premature_finish": {
+                "description": "FINISH before alarm was actually set",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["Clock", "Alarm"],
+            },
+        },
+    },
+
+    # ── Coupang (쿠팡) ──────────────────────────────────────────────
+    "coupang_search_product": {
+        "description": "Search for a product on Coupang",
+        "app_package": "com.coupang.mobile",
+        "task": "Search for 'wireless earbuds' on Coupang and open the first product",
+        "success_keywords": ["earbuds", "product", "price", "cart", "review"],
+        "error_classes": {
+            "invalid_element": {
+                "description": "VLM referenced a non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            },
+            "premature_finish": {
+                "description": "FINISH on search page before opening a product",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["search", "results"],
+            },
+            "wrong_button": {
+                "description": "Tapped purchase instead of just viewing product",
+                "log_patterns": ["buy now", "checkout", "purchase"],
+            },
+        },
+    },
+    "coupang_add_to_cart": {
+        "description": "Add a product to cart on Coupang",
+        "app_package": "com.coupang.mobile",
+        "task": "Search for 'USB-C cable' on Coupang, open the first result, and add it to cart",
+        "success_keywords": ["cart", "added", "basket"],
+        "error_classes": {
+            "missing_option": {
+                "description": "Tried to add to cart without selecting required options",
+                "log_patterns": ["option", "select", "required", "choose"],
+            },
+            "wrong_button": {
+                "description": "Tapped instant purchase instead of add-to-cart",
+                "log_patterns": ["buy now", "purchase", "checkout", "IrreversibleGuard"],
+            },
+            "premature_finish": {
+                "description": "FINISH at confirmation popup instead of actual completion",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["added to cart", "popup", "confirm"],
+            },
+        },
+    },
+
+    # ── MyRealTrip (마이리얼트립) ────────────────────────────────────
+    "myrealtrip_search": {
+        "description": "Search for a travel destination on MyRealTrip",
+        "app_package": "com.mrt.ducati",
+        "task": "Search for 'Osaka' on MyRealTrip and browse available tours",
+        "success_keywords": ["Osaka", "tour", "travel", "trip", "booking"],
+        "error_classes": {
+            "invalid_element": {
+                "description": "VLM referenced a non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            },
+            "loop_stuck": {
+                "description": "Repeated the same search action without results",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
+            },
+        },
+    },
+
+    # ── CGV ──────────────────────────────────────────────────────────
+    "cgv_movie_showtime": {
+        "description": "Check movie showtimes on CGV",
+        "app_package": "com.cgv.android.movieapp",
+        "task": "Open CGV and check today's showtimes at the nearest theater",
+        "success_keywords": ["showtime", "theater", "movie", "screen", "seat"],
+        "error_classes": {
+            "invalid_element": {
+                "description": "VLM referenced a non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            },
+            "premature_finish": {
+                "description": "FINISH before showtimes were displayed",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["CGV", "movie"],
+            },
+            "wrong_action": {
+                "description": "Attempted to book/purchase instead of just checking times",
+                "log_patterns": ["purchase", "pay", "book", "IrreversibleGuard"],
+            },
+        },
+    },
+
+    # ── Naver Map (네이버 지도) — 추천 앱 ──────────────────────────
+    "navermap_search": {
+        "description": "Search for a place on Naver Map",
+        "app_package": "com.nhn.android.nmap",
+        "task": "Search for 'Gangnam Station' on Naver Map and view the result",
+        "success_keywords": ["Gangnam", "station", "map", "route"],
+        "error_classes": {
+            "invalid_element": {
+                "description": "VLM referenced a non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            },
+            "loop_stuck": {
+                "description": "Stuck in a loop",
+                "log_patterns": ["StateTransition FAIL"],
+            },
+        },
+    },
+    "navermap_route": {
+        "description": "Find a route on Naver Map",
+        "app_package": "com.nhn.android.nmap",
+        "task": "Find a transit route from Seoul Station to Gangnam Station on Naver Map",
+        "success_keywords": ["route", "transit", "bus", "subway", "min"],
+        "error_classes": {
+            "invalid_element": {
+                "description": "VLM referenced a non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            },
+            "premature_finish": {
+                "description": "FINISH before route results displayed",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["departure", "destination"],
             },
         },
     },

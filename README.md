@@ -344,25 +344,48 @@ cd ~/PythonProgramming/mobile-agent-causal-world-model-poc
 
 # Control (Causal 없이) — 5회
 export CAUSAL_MODE=false WRAPPER_ENABLED=false
-python poc_experiment.py --scenario cart_add --mode control --rounds 5
+python poc_experiment.py --scenario maps_search_location --mode control --rounds 5
 
 # Treatment (Causal + Wrapper) — 5회
 export CAUSAL_MODE=true WRAPPER_ENABLED=true
-python poc_experiment.py --scenario cart_add --mode treatment --rounds 5
+python poc_experiment.py --scenario maps_search_location --mode treatment --rounds 5
 
 # 결과 비교
-python poc_experiment.py --compare --scenario cart_add
+python poc_experiment.py --compare --scenario maps_search_location
+
+# 전체 시나리오 목록 확인
+python poc_experiment.py --help
 ```
+
+### 시나리오 목록
+
+> 모든 에이전트 명령(task)은 **영어**로 작성되어 있습니다.
+
+| 시나리오 | 앱 | 태스크 (영어) |
+|----------|-----|------|
+| `settings_wifi` | Settings | Open the Wi-Fi settings menu |
+| `settings_display_brightness` | Settings | Set brightness to maximum |
+| `settings_airplane_mode` | Settings | Enable airplane mode |
+| `maps_search_location` | Google Maps | Search for 'Tokyo Tower' |
+| `maps_get_directions` | Google Maps | Directions from Central Park to Times Square |
+| `chrome_search` | Chrome | Search for 'weather in Seoul' |
+| `clock_set_alarm` | Clock | Create alarm for 7:30 AM |
+| `coupang_search_product` | Coupang | Search for 'wireless earbuds' |
+| `coupang_add_to_cart` | Coupang | Add 'USB-C cable' to cart |
+| `myrealtrip_search` | MyRealTrip | Search for 'Osaka' tours |
+| `cgv_movie_showtime` | CGV | Check today's showtimes |
+| `navermap_search` | Naver Map | Search for 'Gangnam Station' |
+| `navermap_route` | Naver Map | Transit route Seoul Station → Gangnam |
 
 ### 검증 대상 오류 클래스
 
-| 시나리오 | Causal 없이 발생하는 오류 | Wrapper가 막는 방법 |
+| 오류 클래스 | Causal 없이 발생하는 오류 | Wrapper가 막는 방법 |
 |----------|--------------------------|---------------------|
-| 옵션 미선택 담기 | 필수 옵션 미선택 → 오류 팝업 | Precondition Check |
-| 바로구매 vs 담기 혼동 | 즉시 결제 진행 | Irreversible Guard |
-| 확인 팝업 완료 오판 | 팝업에서 FINISH 출력 | 프롬프트 래퍼 가이드 |
-| 존재하지 않는 UI 요소 | IndexError 크래시 | elem_list 범위 검증 |
-| 동일 화면 반복 | 무한 루프 | State Transition Check |
+| `missing_option` | 필수 옵션 미선택 → 오류 팝업 | Precondition Check |
+| `wrong_button` | 즉시 결제 버튼 오클릭 | Irreversible Guard |
+| `premature_finish` | 중간 상태에서 FINISH 오판 | 프롬프트 래퍼 가이드 |
+| `invalid_element` | 존재하지 않는 UI 요소 → IndexError | elem_list 범위 검증 |
+| `loop_stuck` | 동일 화면 반복 → 무한 루프 | State Transition Check |
 
 ---
 
