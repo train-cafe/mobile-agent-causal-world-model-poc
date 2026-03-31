@@ -48,7 +48,7 @@ ROUND_TIMEOUT = int(os.environ.get("ROUND_TIMEOUT", "600"))  # 라운드당 타�
 
 # ─── 시나리오 정의 ────────────────────────────────────────────────────────────
 # 각 시나리오는 AppAgent에 전달할 태스크와 오류 감지 규칙을 정의합니다.
-SCENARIOS: dict[str, dict] = {
+SCENARIOS = {
 
     # ══════════════════════════════════════════════════════════════════
     # TIER 1: Multi-step + Irreversible Trap
@@ -810,7 +810,7 @@ def _print_round_summary(results: dict, scenario: dict) -> None:
 
 # ─── 전체 실행 (run-all) ─────────────────────────────────────────────────────
 
-def run_all(rounds: int, scenarios_filter: list[str] | None = None) -> None:
+def run_all(rounds: int, scenarios_filter=None) -> None:
     """
     모든 시나리오를 control → treatment 순서로 실행하고,
     전체 비교 리포트를 저장합니다.
@@ -1060,7 +1060,7 @@ def compare_results(scenario_name: str) -> None:
     print(f" PoC 결과 비교 — {scenario_name or '전체'}")
     print(f"{'='*70}")
 
-    def load_latest(file_list: list[Path]) -> dict | None:
+    def load_latest(file_list):
         if not file_list:
             return None
         with open(file_list[-1], encoding="utf-8") as f:
