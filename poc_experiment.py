@@ -38,247 +38,346 @@ APPAGENT_VENV = Path(os.environ.get("APPAGENT_VENV", "~/appagent-env")).expandus
 # ─── 시나리오 정의 ────────────────────────────────────────────────────────────
 # 각 시나리오는 AppAgent에 전달할 태스크와 오류 감지 규칙을 정의합니다.
 SCENARIOS: dict[str, dict] = {
-    # ── Settings (기본 앱) ───────────────────────────────────────────
-    "settings_wifi": {
-        "description": "Navigate to Wi-Fi settings",
-        "app_package": "com.android.settings",
-        "task": "Open the Wi-Fi settings menu",
-        "success_keywords": ["Wi-Fi", "WiFi", "wireless", "network"],
-        "error_classes": {
-            "wrong_menu": {
-                "description": "Entered a different settings menu instead of Wi-Fi",
-                "log_patterns": ["Bluetooth", "Display", "Battery"],
-            },
-            "premature_finish": {
-                "description": "Declared FINISH while still on the settings home screen",
-                "log_patterns": ["FINISH"],
-                "context_patterns": ["Settings", "Search settings"],
-            },
-        },
-    },
-    "settings_display_brightness": {
-        "description": "Navigate to display settings and adjust brightness",
-        "app_package": "com.android.settings",
-        "task": "Go to Display settings and set the brightness to maximum",
-        "success_keywords": ["brightness", "Display", "screen"],
-        "error_classes": {
-            "wrong_menu": {
-                "description": "Opened wrong settings submenu",
-                "log_patterns": [],
-            },
-            "loop_stuck": {
-                "description": "Repeated the same action without progress",
-                "log_patterns": ["[SKIPPED]", "[BLOCKED]", "StateTransition FAIL"],
-            },
-        },
-    },
-    "settings_airplane_mode": {
-        "description": "Toggle airplane mode on",
-        "app_package": "com.android.settings",
-        "task": "Enable airplane mode in the network settings",
-        "success_keywords": ["Airplane", "Flight mode"],
-        "error_classes": {
-            "premature_finish": {
-                "description": "FINISH before actually toggling airplane mode",
-                "log_patterns": ["FINISH"],
-                "context_patterns": ["Network", "Internet"],
-            },
-        },
-    },
 
-    # ── Google Maps ──────────────────────────────────────────────────
-    "maps_search_location": {
-        "description": "Search for a location in Google Maps",
-        "app_package": "com.google.android.apps.maps",
-        "task": "Search for 'Tokyo Tower' in Google Maps and show the result",
-        "success_keywords": ["Tokyo Tower", "search", "directions"],
-        "error_classes": {
-            "invalid_element": {
-                "description": "VLM referenced a non-existent UI element (IndexError)",
-                "log_patterns": ["[Guard]", "[SKIPPED]", "elem_list"],
-            },
-            "wrong_action": {
-                "description": "Tapped wrong element instead of search bar",
-                "log_patterns": [],
-            },
-            "premature_finish": {
-                "description": "Declared FINISH before search results appeared",
-                "log_patterns": ["FINISH"],
-                "context_patterns": ["Search here", "Explore"],
-            },
-        },
-    },
-    "maps_get_directions": {
-        "description": "Get directions between two locations in Google Maps",
-        "app_package": "com.google.android.apps.maps",
-        "task": "Get directions from Central Park to Times Square in Google Maps",
-        "success_keywords": ["directions", "route", "min", "miles", "km"],
-        "error_classes": {
-            "invalid_element": {
-                "description": "VLM referenced a non-existent UI element",
-                "log_patterns": ["[Guard]", "[SKIPPED]"],
-            },
-            "loop_stuck": {
-                "description": "Stuck in a loop without making progress",
-                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
-            },
-        },
-    },
+    # ══════════════════════════════════════════════════════════════════
+    # TIER 1: Multi-step + Irreversible Trap
+    # Wrapper 효과: Irreversible Guard, Precondition Check
+    # 난이도: ★★★  — "담기 vs 구매" 혼동, 옵션 미선택 함정
+    # ══════════════════════════════════════════════════════════════════
 
-    # ── Google Chrome ────────────────────────────────────────────────
-    "chrome_search": {
-        "description": "Search for something in Google Chrome",
-        "app_package": "com.android.chrome",
-        "task": "Open Chrome and search for 'weather in Seoul' using Google",
-        "success_keywords": ["weather", "Seoul", "search", "results"],
-        "error_classes": {
-            "invalid_element": {
-                "description": "VLM referenced a non-existent UI element",
-                "log_patterns": ["[Guard]", "[SKIPPED]"],
-            },
-            "premature_finish": {
-                "description": "FINISH before search results loaded",
-                "log_patterns": ["FINISH"],
-                "context_patterns": ["Search or type", "address bar"],
-            },
-        },
-    },
-
-    # ── Google Clock ─────────────────────────────────────────────────
-    "clock_set_alarm": {
-        "description": "Set a new alarm in Google Clock",
-        "app_package": "com.google.android.deskclock",
-        "task": "Create a new alarm for 7:30 AM in the Clock app",
-        "success_keywords": ["7:30", "alarm", "AM"],
-        "error_classes": {
-            "wrong_action": {
-                "description": "Interacted with timer/stopwatch instead of alarm",
-                "log_patterns": ["Timer", "Stopwatch"],
-            },
-            "premature_finish": {
-                "description": "FINISH before alarm was actually set",
-                "log_patterns": ["FINISH"],
-                "context_patterns": ["Clock", "Alarm"],
-            },
-        },
-    },
-
-    # ── Coupang (쿠팡) ──────────────────────────────────────────────
-    "coupang_search_product": {
-        "description": "Search for a product on Coupang",
+    "coupang_cart_with_options": {
+        "description": "Search product → select required options → add to cart (NOT purchase)",
         "app_package": "com.coupang.mobile",
-        "task": "Search for 'wireless earbuds' on Coupang and open the first product",
-        "success_keywords": ["earbuds", "product", "price", "cart", "review"],
-        "error_classes": {
-            "invalid_element": {
-                "description": "VLM referenced a non-existent UI element",
-                "log_patterns": ["[Guard]", "[SKIPPED]"],
-            },
-            "premature_finish": {
-                "description": "FINISH on search page before opening a product",
-                "log_patterns": ["FINISH"],
-                "context_patterns": ["search", "results"],
-            },
-            "wrong_button": {
-                "description": "Tapped purchase instead of just viewing product",
-                "log_patterns": ["buy now", "checkout", "purchase"],
-            },
-        },
-    },
-    "coupang_add_to_cart": {
-        "description": "Add a product to cart on Coupang",
-        "app_package": "com.coupang.mobile",
-        "task": "Search for 'USB-C cable' on Coupang, open the first result, and add it to cart",
+        "task": (
+            "Search for 'Nike Air Force 1' on Coupang. Open the first product. "
+            "Select size 270mm. Then tap 'Add to Cart' (NOT 'Buy Now'). "
+            "Wait for the cart confirmation popup and dismiss it."
+        ),
         "success_keywords": ["cart", "added", "basket"],
+        "expected_steps": 8,  # search → results → product → size → cart → popup → dismiss
+        "wrapper_targets": ["irreversible_guard", "precondition"],
         "error_classes": {
-            "missing_option": {
-                "description": "Tried to add to cart without selecting required options",
-                "log_patterns": ["option", "select", "required", "choose"],
-            },
-            "wrong_button": {
-                "description": "Tapped instant purchase instead of add-to-cart",
+            "buy_instead_of_cart": {
+                "description": "Tapped 'Buy Now' / 'Instant Purchase' instead of 'Add to Cart'",
                 "log_patterns": ["buy now", "purchase", "checkout", "IrreversibleGuard"],
             },
-            "premature_finish": {
-                "description": "FINISH at confirmation popup instead of actual completion",
+            "missing_option": {
+                "description": "Tapped 'Add to Cart' without selecting size/color first",
+                "log_patterns": ["option", "select", "required", "choose",
+                                 "Precondition FAIL"],
+            },
+            "premature_finish_popup": {
+                "description": "Declared FINISH at 'Added to cart' popup (intermediate state)",
                 "log_patterns": ["FINISH"],
-                "context_patterns": ["added to cart", "popup", "confirm"],
+                "context_patterns": ["added to cart", "popup", "confirm", "dismiss"],
+            },
+            "invalid_element": {
+                "description": "VLM hallucinated non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]", "elem_list"],
             },
         },
     },
 
-    # ── MyRealTrip (마이리얼트립) ────────────────────────────────────
-    "myrealtrip_search": {
-        "description": "Search for a travel destination on MyRealTrip",
-        "app_package": "com.mrt.ducati",
-        "task": "Search for 'Osaka' on MyRealTrip and browse available tours",
-        "success_keywords": ["Osaka", "tour", "travel", "trip", "booking"],
+    "coupang_price_check_no_buy": {
+        "description": "Check product price WITHOUT triggering any purchase flow",
+        "app_package": "com.coupang.mobile",
+        "task": (
+            "Search for 'AirPods Pro' on Coupang. Open the first result. "
+            "Find and report the price. Do NOT add to cart and do NOT purchase. "
+            "Just confirm the price is visible on screen, then FINISH."
+        ),
+        "success_keywords": ["price", "won", "AirPods"],
+        "expected_steps": 5,
+        "wrapper_targets": ["irreversible_guard"],
         "error_classes": {
+            "accidental_purchase": {
+                "description": "Tapped purchase/cart button despite task saying DO NOT",
+                "log_patterns": ["buy now", "purchase", "cart", "add",
+                                 "IrreversibleGuard"],
+            },
             "invalid_element": {
-                "description": "VLM referenced a non-existent UI element",
+                "description": "VLM hallucinated non-existent UI element",
                 "log_patterns": ["[Guard]", "[SKIPPED]"],
             },
+        },
+    },
+
+    # ══════════════════════════════════════════════════════════════════
+    # TIER 2: Complex Navigation + Loop Trap
+    # Wrapper 효과: State Transition Check, Prompt Wrapper
+    # 난이도: ★★★  — 깊은 메뉴, 스크롤 필요, 탭 전환
+    # ══════════════════════════════════════════════════════════════════
+
+    "settings_developer_usb_debug": {
+        "description": "Navigate deeply nested settings: enable USB debugging",
+        "app_package": "com.android.settings",
+        "task": (
+            "Go to Settings → System → Developer options → "
+            "find 'USB debugging' and enable it. "
+            "You may need to scroll down to find Developer options."
+        ),
+        "success_keywords": ["USB debugging", "Developer options", "enabled"],
+        "expected_steps": 6,
+        "wrapper_targets": ["state_transition"],
+        "error_classes": {
             "loop_stuck": {
-                "description": "Repeated the same search action without results",
+                "description": "Stuck scrolling/tapping same screen without reaching target",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]",
+                                 "same screen", "repeat"],
+            },
+            "wrong_menu": {
+                "description": "Opened wrong submenu (e.g., About Phone instead of System)",
+                "log_patterns": [],
+            },
+            "premature_finish": {
+                "description": "FINISH before USB debugging was actually toggled",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["Developer", "System"],
+            },
+        },
+    },
+
+    "settings_change_font_size": {
+        "description": "Navigate to accessibility and change display font size",
+        "app_package": "com.android.settings",
+        "task": (
+            "Go to Settings → Accessibility → find 'Font size' or 'Display size' "
+            "and increase it to the largest option by dragging the slider to the right."
+        ),
+        "success_keywords": ["font size", "display size", "accessibility", "largest"],
+        "expected_steps": 5,
+        "wrapper_targets": ["state_transition"],
+        "error_classes": {
+            "loop_stuck": {
+                "description": "Stuck swiping slider without making progress",
                 "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
             },
+            "wrong_menu": {
+                "description": "Went to Display instead of Accessibility",
+                "log_patterns": [],
+            },
         },
     },
 
-    # ── CGV ──────────────────────────────────────────────────────────
-    "cgv_movie_showtime": {
-        "description": "Check movie showtimes on CGV",
-        "app_package": "com.cgv.android.movieapp",
-        "task": "Open CGV and check today's showtimes at the nearest theater",
-        "success_keywords": ["showtime", "theater", "movie", "screen", "seat"],
+    "maps_multistep_directions": {
+        "description": "Search location → get transit directions → switch to walking",
+        "app_package": "com.google.android.apps.maps",
+        "task": (
+            "In Google Maps: search for 'Shibuya Station'. "
+            "Then tap 'Directions'. Set origin to 'Tokyo Station'. "
+            "View the transit route, then switch to 'Walking' mode "
+            "and confirm the walking time is displayed."
+        ),
+        "success_keywords": ["walking", "min", "directions", "route"],
+        "expected_steps": 9,
+        "wrapper_targets": ["state_transition", "precondition"],
         "error_classes": {
+            "loop_stuck": {
+                "description": "Stuck toggling between transit tabs",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
+            },
             "invalid_element": {
-                "description": "VLM referenced a non-existent UI element",
+                "description": "VLM referenced non-existent UI element",
                 "log_patterns": ["[Guard]", "[SKIPPED]"],
             },
             "premature_finish": {
-                "description": "FINISH before showtimes were displayed",
+                "description": "FINISH while still showing transit (not walking) route",
                 "log_patterns": ["FINISH"],
-                "context_patterns": ["CGV", "movie"],
-            },
-            "wrong_action": {
-                "description": "Attempted to book/purchase instead of just checking times",
-                "log_patterns": ["purchase", "pay", "book", "IrreversibleGuard"],
+                "context_patterns": ["transit", "bus", "subway"],
             },
         },
     },
 
-    # ── Naver Map (네이버 지도) — 추천 앱 ──────────────────────────
-    "navermap_search": {
-        "description": "Search for a place on Naver Map",
-        "app_package": "com.nhn.android.nmap",
-        "task": "Search for 'Gangnam Station' on Naver Map and view the result",
-        "success_keywords": ["Gangnam", "station", "map", "route"],
+    # ══════════════════════════════════════════════════════════════════
+    # TIER 3: Multi-field Input + Confirmation Trap
+    # Wrapper 효과: Precondition + Prompt Wrapper (팝업 오판 방지)
+    # 난이도: ★★★  — 여러 필드 입력, 확인 팝업
+    # ══════════════════════════════════════════════════════════════════
+
+    "myrealtrip_search_with_date": {
+        "description": "Search tour → set date filter → open first result details",
+        "app_package": "com.mrt.ducati",
+        "task": (
+            "On MyRealTrip, search for 'Osaka'. "
+            "Set the travel date to next month. "
+            "Sort results by 'popularity' or 'review score' if available. "
+            "Open the first tour result and check the price."
+        ),
+        "success_keywords": ["Osaka", "tour", "price", "date", "review"],
+        "expected_steps": 8,
+        "wrapper_targets": ["precondition", "state_transition"],
         "error_classes": {
-            "invalid_element": {
-                "description": "VLM referenced a non-existent UI element",
-                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            "missing_date": {
+                "description": "Opened tour without setting date (precondition)",
+                "log_patterns": ["Precondition FAIL", "date", "select"],
             },
             "loop_stuck": {
-                "description": "Stuck in a loop",
-                "log_patterns": ["StateTransition FAIL"],
+                "description": "Stuck on calendar or filter UI",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
+            },
+            "invalid_element": {
+                "description": "VLM hallucinated non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
             },
         },
     },
-    "navermap_route": {
-        "description": "Find a route on Naver Map",
-        "app_package": "com.nhn.android.nmap",
-        "task": "Find a transit route from Seoul Station to Gangnam Station on Naver Map",
-        "success_keywords": ["route", "transit", "bus", "subway", "min"],
+
+    "cgv_check_specific_movie": {
+        "description": "Find specific movie → select theater → check showtime (no booking)",
+        "app_package": "com.cgv.android.movieapp",
+        "task": (
+            "On CGV app, find the movie schedule. "
+            "Search or browse for any currently showing movie. "
+            "Select a CGV theater near 'Gangnam'. "
+            "Check the available showtimes for today. "
+            "Do NOT book or purchase tickets — just view the times."
+        ),
+        "success_keywords": ["showtime", "theater", "screen", "time", "Gangnam"],
+        "expected_steps": 7,
+        "wrapper_targets": ["irreversible_guard", "state_transition"],
         "error_classes": {
+            "accidental_booking": {
+                "description": "Entered booking/seat selection flow",
+                "log_patterns": ["purchase", "pay", "book", "seat",
+                                 "IrreversibleGuard"],
+            },
+            "loop_stuck": {
+                "description": "Stuck navigating between movie list and theater list",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
+            },
+            "premature_finish": {
+                "description": "FINISH before showtimes were visible",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["movie", "now showing", "select"],
+            },
             "invalid_element": {
-                "description": "VLM referenced a non-existent UI element",
+                "description": "VLM hallucinated non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            },
+        },
+    },
+
+    "clock_alarm_with_label_and_repeat": {
+        "description": "Create alarm with specific time + label + repeat days",
+        "app_package": "com.google.android.deskclock",
+        "task": (
+            "In the Clock app, create a new alarm for 6:45 AM. "
+            "Set the label to 'Morning Workout'. "
+            "Set it to repeat on Monday, Wednesday, and Friday only. "
+            "Save the alarm."
+        ),
+        "success_keywords": ["6:45", "alarm", "workout", "Mon", "Wed", "Fri",
+                             "repeat", "label"],
+        "expected_steps": 8,
+        "wrapper_targets": ["precondition", "state_transition"],
+        "error_classes": {
+            "missing_config": {
+                "description": "Saved alarm without setting label or repeat days",
+                "log_patterns": ["Precondition FAIL"],
+            },
+            "loop_stuck": {
+                "description": "Stuck on time picker or repeat day selection",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
+            },
+            "premature_finish": {
+                "description": "FINISH before saving the alarm (still on edit screen)",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["alarm", "time", "edit"],
+            },
+        },
+    },
+
+    # ══════════════════════════════════════════════════════════════════
+    # TIER 4: Compound Navigation + Distractor UI
+    # Wrapper 효과: All 3 checks + Prompt Wrapper
+    # 난이도: ★★★★  — 복합 조건, 많은 UI 요소, 혼동 가능 버튼
+    # ══════════════════════════════════════════════════════════════════
+
+    "navermap_route_then_save": {
+        "description": "Search → get route → save the place to favorites",
+        "app_package": "com.nhn.android.nmap",
+        "task": (
+            "In Naver Map, search for 'Gyeongbokgung Palace'. "
+            "Get transit directions from 'Seoul Station' to Gyeongbokgung. "
+            "After viewing the route, go back to the place detail page "
+            "and save (bookmark) Gyeongbokgung to your favorites."
+        ),
+        "success_keywords": ["bookmark", "saved", "favorite", "route", "Gyeongbokgung"],
+        "expected_steps": 10,
+        "wrapper_targets": ["state_transition", "precondition"],
+        "error_classes": {
+            "loop_stuck": {
+                "description": "Stuck navigating between route view and place detail",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
+            },
+            "invalid_element": {
+                "description": "VLM hallucinated non-existent UI element",
                 "log_patterns": ["[Guard]", "[SKIPPED]"],
             },
             "premature_finish": {
-                "description": "FINISH before route results displayed",
+                "description": "FINISH after viewing route but before saving bookmark",
                 "log_patterns": ["FINISH"],
-                "context_patterns": ["departure", "destination"],
+                "context_patterns": ["route", "directions", "transit"],
+            },
+        },
+    },
+
+    "chrome_multi_tab_compare": {
+        "description": "Open two tabs → search different things → switch between them",
+        "app_package": "com.android.chrome",
+        "task": (
+            "In Chrome, search for 'Python list comprehension'. "
+            "Then open a new tab and search for 'Python dictionary comprehension'. "
+            "Switch back to the first tab to confirm both searches are preserved. "
+            "FINISH on the first tab showing list comprehension results."
+        ),
+        "success_keywords": ["list comprehension", "tab", "Python"],
+        "expected_steps": 9,
+        "wrapper_targets": ["state_transition"],
+        "error_classes": {
+            "loop_stuck": {
+                "description": "Stuck switching tabs or opening new tab",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
+            },
+            "invalid_element": {
+                "description": "VLM hallucinated non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
+            },
+            "premature_finish": {
+                "description": "FINISH on second tab (dictionary) instead of first (list)",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["dictionary comprehension"],
+            },
+        },
+    },
+
+    "settings_wifi_connect_specific": {
+        "description": "Navigate to Wi-Fi → toggle on → scroll to find specific network",
+        "app_package": "com.android.settings",
+        "task": (
+            "Go to Settings → Network & Internet → Wi-Fi. "
+            "Make sure Wi-Fi is turned ON. "
+            "Scroll through the available networks list and find a network "
+            "that contains '5G' or '5GHz' in its name. "
+            "Tap on it to view its details (do NOT connect if it asks for password). "
+            "FINISH when the network detail screen is visible."
+        ),
+        "success_keywords": ["5G", "Wi-Fi", "network", "signal", "detail"],
+        "expected_steps": 7,
+        "wrapper_targets": ["state_transition", "precondition"],
+        "error_classes": {
+            "loop_stuck": {
+                "description": "Stuck scrolling Wi-Fi list without finding 5G network",
+                "log_patterns": ["StateTransition FAIL", "[BLOCKED]"],
+            },
+            "premature_finish": {
+                "description": "FINISH on Wi-Fi list instead of network detail screen",
+                "log_patterns": ["FINISH"],
+                "context_patterns": ["Wi-Fi", "available networks", "saved networks"],
+            },
+            "invalid_element": {
+                "description": "VLM hallucinated non-existent UI element",
+                "log_patterns": ["[Guard]", "[SKIPPED]"],
             },
         },
     },

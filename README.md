@@ -360,32 +360,49 @@ python poc_experiment.py --help
 ### 시나리오 목록
 
 > 모든 에이전트 명령(task)은 **영어**로 작성되어 있습니다.
+> Wrapper가 차이를 만들 수 있도록 **다단계 + 함정** 이 포함된 시나리오입니다.
 
-| 시나리오 | 앱 | 태스크 (영어) |
-|----------|-----|------|
-| `settings_wifi` | Settings | Open the Wi-Fi settings menu |
-| `settings_display_brightness` | Settings | Set brightness to maximum |
-| `settings_airplane_mode` | Settings | Enable airplane mode |
-| `maps_search_location` | Google Maps | Search for 'Tokyo Tower' |
-| `maps_get_directions` | Google Maps | Directions from Central Park to Times Square |
-| `chrome_search` | Chrome | Search for 'weather in Seoul' |
-| `clock_set_alarm` | Clock | Create alarm for 7:30 AM |
-| `coupang_search_product` | Coupang | Search for 'wireless earbuds' |
-| `coupang_add_to_cart` | Coupang | Add 'USB-C cable' to cart |
-| `myrealtrip_search` | MyRealTrip | Search for 'Osaka' tours |
-| `cgv_movie_showtime` | CGV | Check today's showtimes |
-| `navermap_search` | Naver Map | Search for 'Gangnam Station' |
-| `navermap_route` | Naver Map | Transit route Seoul Station → Gangnam |
+#### TIER 1: Multi-step + Irreversible Trap (구매/결제 함정)
 
-### 검증 대상 오류 클래스
+| 시나리오 | 앱 | Wrapper 핵심 | 태스크 |
+|---|---|---|---|
+| `coupang_cart_with_options` | Coupang | IrreversibleGuard + Precondition | 상품검색 → 사이즈 선택 → 장바구니 담기 (구매 아님) → 팝업 닫기 |
+| `coupang_price_check_no_buy` | Coupang | IrreversibleGuard | 가격 확인만 (구매/담기 버튼 터치 금지) |
 
-| 오류 클래스 | Causal 없이 발생하는 오류 | Wrapper가 막는 방법 |
-|----------|--------------------------|---------------------|
-| `missing_option` | 필수 옵션 미선택 → 오류 팝업 | Precondition Check |
-| `wrong_button` | 즉시 결제 버튼 오클릭 | Irreversible Guard |
-| `premature_finish` | 중간 상태에서 FINISH 오판 | 프롬프트 래퍼 가이드 |
-| `invalid_element` | 존재하지 않는 UI 요소 → IndexError | elem_list 범위 검증 |
-| `loop_stuck` | 동일 화면 반복 → 무한 루프 | State Transition Check |
+#### TIER 2: Deep Navigation + Loop Trap (스크롤/메뉴 미로)
+
+| 시나리오 | 앱 | Wrapper 핵심 | 태스크 |
+|---|---|---|---|
+| `settings_developer_usb_debug` | Settings | StateTransition | 설정 → 시스템 → 개발자옵션 → USB 디버깅 (스크롤 필요) |
+| `settings_change_font_size` | Settings | StateTransition | 접근성 → 글꼴 크기 슬라이더 최대 |
+| `maps_multistep_directions` | Maps | StateTransition + Precondition | 장소검색 → 경로 → 대중교통 → 도보로 전환 |
+
+#### TIER 3: Multi-field Input + Confirmation Trap (다중 입력 + 팝업 오판)
+
+| 시나리오 | 앱 | Wrapper 핵심 | 태스크 |
+|---|---|---|---|
+| `myrealtrip_search_with_date` | MyRealTrip | Precondition + StateTransition | 여행검색 + 날짜 설정 + 정렬 + 상세 확인 |
+| `cgv_check_specific_movie` | CGV | IrreversibleGuard + StateTransition | 영화/극장 선택 + 상영시간 확인 (예매 금지) |
+| `clock_alarm_with_label_and_repeat` | Clock | Precondition + StateTransition | 알람 + 라벨 + 반복요일 설정 후 저장 |
+
+#### TIER 4: Compound Navigation + Distractor UI (복합 조건)
+
+| 시나리오 | 앱 | Wrapper 핵심 | 태스크 |
+|---|---|---|---|
+| `navermap_route_then_save` | Naver Map | StateTransition + Precondition | 경로검색 → 돌아가서 → 즐겨찾기 저장 |
+| `chrome_multi_tab_compare` | Chrome | StateTransition | 탭1 검색 → 탭2 검색 → 탭1로 복귀 → FINISH |
+| `settings_wifi_connect_specific` | Settings | StateTransition + Precondition | Wi-Fi ON → 5G 네트워크 찾기(스크롤) → 상세보기 |
+
+### 왜 이 시나리오에서 Wrapper가 차이를 만드는가
+
+| 오류 클래스 | 발생 상황 | Wrapper 방어 | 해당 시나리오 |
+|---|---|---|---|
+| `buy_instead_of_cart` | "담기"가 목표인데 "바로구매" 클릭 | **Irreversible Guard** | coupang_cart, coupang_price |
+| `missing_option` | 사이즈/날짜 미선택 후 다음 단계 시도 | **Precondition Check** | coupang_cart, myrealtrip, clock_alarm |
+| `premature_finish_popup` | "장바구니에 담겼습니다" 팝업에서 FINISH | **Prompt Wrapper** | coupang_cart, cgv |
+| `loop_stuck` | 스크롤/탭전환 반복하며 목표 못 찾음 | **State Transition** | settings_dev, maps_multi, chrome_tab |
+| `invalid_element` | VLM이 없는 UI 번호 출력 | **elem_list 범위 검증** | 전체 (복잡한 UI일수록 빈번) |
+| `accidental_booking` | "확인만" 태스크인데 예매/결제 진입 | **Irreversible Guard** | cgv, coupang_price |
 
 ---
 
