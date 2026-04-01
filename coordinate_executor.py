@@ -5,9 +5,8 @@ Qwen3.5 (네이티브 멀티모달, GUI Agent 내장) 또는 UI-TARS 모델을 �
 스크린샷만으로 직접 좌표를 출력. uiautomator dump, 번호 라벨링 없이 동작.
 
 지원 모델:
-  - Qwen/Qwen3.5-35B-A3B (권장, MoE 3B active, AndroidWorld 66.8)
-  - Qwen/Qwen3.5-27B
-  - bytedance-research/UI-TARS-72B-SFT
+  - bytedance-research/UI-TARS-72B-SFT (권장, UI 전용 학습)
+  - bytedance-research/UI-TARS-7B-SFT
   - Qwen2.5-VL 계열
 
 사용법:
