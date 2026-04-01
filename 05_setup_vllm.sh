@@ -13,16 +13,16 @@ VENV_DIR="${HOME}/vllm-env"
 VLLM_PORT="${VLLM_PORT:-8080}"
 VLLM_HOST="${VLLM_HOST:-0.0.0.0}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
-GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 
 # GPU 0,1만 사용 (GPU 2,3은 이미 점유됨)
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 
-# 모델: Qwen3.5-35B-A3B (네이티브 멀티모달, MoE 35B/3B active)
-# H100 x2 = 160GB VRAM, 35B fp16 ≈ 70GB → 여유 있음
-# GUI Agent 내장: AndroidWorld 66.8, ScreenSpot Pro 65.6
-MODEL="${MODEL:-Qwen/Qwen3.5-35B-A3B}"
+# 모델: UI-TARS-72B (UI 전용 에이전트, Qwen2-VL-72B 기반)
+# H100 x2 = 160GB VRAM, 72B fp16 ≈ 144GB → 가능 (여유 적음)
+# GDN 미사용 (표준 Qwen2-VL 아키텍처) → 현재 CUDA에서 동작
+MODEL="${MODEL:-bytedance-research/UI-TARS-72B-SFT}"
 
 LOG_DIR="${HOME}/.vllm/logs"
 VLLM_LOG="${LOG_DIR}/vllm-server.log"
@@ -93,7 +93,7 @@ if [[ "${MODEL_CACHED}" == "yes" ]]; then
     echo "   ✅ 모델 캐시 확인됨: ${MODEL}"
 else
     echo "   → 모델 다운로드 중: ${MODEL}"
-    echo "      (35B MoE 모델 약 70GB, 시간이 걸립니다)"
+    echo "      (72B 모델 약 140GB, 시간이 걸립니다)"
     # HF_TOKEN 환경변수가 있으면 인증 추가 (private 모델 / rate limit 완화)
     if [[ -n "${HF_TOKEN:-}" ]]; then
         echo "      HF_TOKEN 인증 사용"
