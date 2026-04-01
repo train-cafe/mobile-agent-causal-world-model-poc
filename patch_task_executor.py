@@ -170,10 +170,19 @@ def insert_action_wrapper(lines: list[str]) -> list[str]:
         if re.search(r'if\s+act_name\s*==\s*["\']FINISH["\']', line):
             indent = re.match(r"(\s*)", line).group(1)
             wrapper_code = (
-                f"{indent}# ── elem_list 범위 초과 방어 ──  {WRAPPER_MARKER}\n"
+                f"{indent}# ── elem_list 범위 초과 방어 + 자동 enter() 변환 ──  {WRAPPER_MARKER}\n"
                 f"{indent}if act_name in ('tap', 'long_press', 'swipe') and len(res) > 1:\n"
                 f"{indent}    _area_idx = res[1] if isinstance(res[1], int) else None\n"
                 f"{indent}    if _area_idx is not None and _area_idx > len(elem_list):\n"
+                f"{indent}        # 이전 액션이 text()였으면 키보드 검색 시도로 판단 → enter()로 변환\n"
+                f"{indent}        if 'text' in last_act.lower() or 'typed' in last_act.lower() or 'entering' in last_act.lower() or 'search' in last_act.lower():\n"
+                f"{indent}            print_with_color(\n"
+                f"{indent}                f'[Guard] 요소 {{_area_idx}} > 최대 {{len(elem_list)}}. text 직후 → enter()로 자동 변환', 'yellow'\n"
+                f"{indent}            )\n"
+                f"{indent}            ret = controller.enter()\n"
+                f"{indent}            last_act = 'Pressed Enter key to submit search/input'\n"
+                f"{indent}            time.sleep(configs.get('REQUEST_INTERVAL', 3))\n"
+                f"{indent}            continue\n"
                 f"{indent}        print_with_color(\n"
                 f"{indent}            f'[Guard] 요소 번호 {{_area_idx}} > 최대 {{len(elem_list)}}. 스킵.', 'red'\n"
                 f"{indent}        )\n"
