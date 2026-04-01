@@ -208,6 +208,34 @@ def insert_action_wrapper(lines: list[str]) -> list[str]:
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Step 5: 스크린샷/XML 캡처 전 UI 안정화 대기
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+UI_SETTLE_MARKER = "# [UI_SETTLE_PATCH]"
+
+
+def insert_ui_settle(lines):
+    """
+    get_screenshot() 호출 직전에 UI 안정화 대기를 삽입.
+
+    문제: 스크린샷과 XML dump 사이에 화면이 바뀌면
+          라벨 번호가 실제 버튼 위치와 어긋남.
+    해결: 스크린샷 전에 2초 대기 + XML dump를 먼저 실행하여
+          XML 상태에 맞는 스크린샷을 확보.
+    """
+    for i, line in enumerate(lines):
+        if "get_screenshot" in line and "controller" in line and UI_SETTLE_MARKER not in line:
+            indent = re.match(r"(\s*)", line).group(1)
+            settle_code = (
+                f"{indent}# ── UI 안정화 대기 ── {UI_SETTLE_MARKER}\n"
+                f"{indent}time.sleep(2)  # 화면 전환/애니메이션 완료 대기\n"
+            )
+            lines.insert(i, settle_code)
+            return lines
+    return lines
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Main patch function
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -231,18 +259,21 @@ def patch(filepath: str) -> None:
 
     lines = source.splitlines(keepends=True)
 
-    print("   → [1/5] import 추가...")
+    print("   → [1/6] import 추가...")
     lines = insert_imports(lines)
 
-    print("   → [2/5] causal_model + action_wrapper 초기화 삽입...")
+    print("   → [2/6] causal_model + action_wrapper 초기화 삽입...")
     lines = insert_init(lines)
 
-    print("   → [3/5] wrap_prompt 호출 삽입...")
+    print("   → [3/6] UI 안정화 대기 삽입 (스크린샷/XML 타이밍 수정)...")
+    lines = insert_ui_settle(lines)
+
+    print("   → [4/6] wrap_prompt 호출 삽입...")
     lines = insert_wrap_prompt(lines)
 
-    print("   → [4/5] record_action 삽입...")
+    print("   → [5/6] record_action 삽입...")
     # insert_action_wrapper handles both record_action and wrapper evaluate
-    print("   → [5/5] action_wrapper.evaluate() 삽입...")
+    print("   → [6/6] action_wrapper.evaluate() 삽입...")
     lines = insert_action_wrapper(lines)
 
     patched_source = "".join(lines)
