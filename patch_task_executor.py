@@ -237,17 +237,17 @@ ENTER_MARKER = "# [ENTER_ACTION_PATCH]"
 
 def insert_enter_action(lines):
     """
-    3곳 패치:
+    2곳 패치 (task_executor.py 내):
     1. 프롬프트에 enter() 액션 설명 추가
-    2. parse_explore_rsp에 enter 파싱 추가
-    3. task_executor.py 메인 루프에 enter 실행 분기 추가
+    2. task_executor.py 메인 루프에 enter 실행 분기 추가
+
+    주의: parse_explore_rsp는 model.py에 있으므로 별도 패치 필요.
+    model.py 패치는 patch_model_enter()에서 처리.
     """
 
     # ── 1. 프롬프트 패치: text() 설명 뒤에 enter() 추가 ──
     for i, line in enumerate(lines):
         if "text(text_input: str)" in line and ENTER_MARKER not in "".join(lines[max(0,i-2):i+2]):
-            # text() 설명 블록 끝을 찾아서 enter() 설명 삽입
-            # "showing in the lower half of the screen." 뒤에 삽입
             for j in range(i, min(i + 10, len(lines))):
                 if "lower half of the screen" in lines[j]:
                     indent = re.match(r"(\s*)", lines[j]).group(1) or ""
@@ -264,22 +264,9 @@ def insert_enter_action(lines):
                     break
             break
 
-    # ── 2. parse_explore_rsp 패치: enter 파싱 ──
-    for i, line in enumerate(lines):
-        if 'act_name == "tap"' in line and "enter" not in "".join(lines[max(0,i-3):i]):
-            indent = re.match(r"(\s*)", line).group(1)
-            enter_parse = (
-                f"{indent}if act_name == 'enter':  {ENTER_MARKER}\n"
-                f"{indent}    return [act_name, last_act]\n"
-            )
-            lines.insert(i, enter_parse)
-            break
-
-    # ── 3. 액션 실행 패치: enter 분기 ──
+    # ── 2. 액션 실행 패치: enter 분기 ──
     for i, line in enumerate(lines):
         if 'act_name == "swipe"' in line and "controller" in "".join(lines[i:i+5]):
-            # swipe 분기 뒤에 enter 분기 추가
-            # swipe 블록의 끝(break 포함)을 찾음
             for j in range(i + 1, min(i + 15, len(lines))):
                 if "elif" in lines[j] or ("grid" in lines[j] and "act_name" in lines[j]):
                     indent = re.match(r"(\s*)", lines[j]).group(1)
@@ -295,6 +282,50 @@ def insert_enter_action(lines):
             break
 
     return lines
+
+
+def patch_model_enter(model_py_path):
+    """
+    model.py의 parse_explore_rsp에 enter 파싱을 추가.
+    act_name == "tap" 분기 직전에 enter 분기 삽입.
+    """
+    path = Path(model_py_path)
+    if not path.exists():
+        print(f"   ⚠️  model.py 없음: {model_py_path}")
+        return
+
+    source = path.read_text(encoding="utf-8")
+    if ENTER_MARKER in source:
+        print(f"   ✅ model.py 이미 패치됨 (스킵)")
+        return
+
+    lines = source.splitlines(keepends=True)
+
+    # parse_explore_rsp 함수 안에서 act_name == "tap" 직전에 삽입
+    for i, line in enumerate(lines):
+        if 'act_name == "tap"' in line:
+            # 이 줄이 parse_explore_rsp 안에 있는지 확인 (위로 올라가서 def 찾기)
+            in_parse_fn = False
+            for k in range(i - 1, max(0, i - 30), -1):
+                if "def parse_explore_rsp" in lines[k]:
+                    in_parse_fn = True
+                    break
+                if lines[k].strip().startswith("def ") and "parse_explore_rsp" not in lines[k]:
+                    break
+            if not in_parse_fn:
+                continue
+
+            indent = re.match(r"(\s*)", line).group(1)
+            enter_code = (
+                f"{indent}if act_name == 'enter':  {ENTER_MARKER}\n"
+                f"{indent}    return [act_name, last_act]\n"
+            )
+            lines.insert(i, enter_code)
+            break
+
+    patched = "".join(lines)
+    path.write_text(patched, encoding="utf-8")
+    print(f"   ✅ model.py 패치 완료: enter() 파싱 추가")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -349,6 +380,11 @@ def patch(filepath: str) -> None:
     print(f"   ✅ 패치 완료: {filepath}")
     print(f"      프롬프트 래퍼 패치: {causal_count}개")
     print(f"      액션 래퍼 패치: {wrapper_count}개")
+
+    # model.py도 패치 (같은 디렉토리)
+    model_py = path.parent / "model.py"
+    print(f"   → model.py enter() 파싱 패치...")
+    patch_model_enter(str(model_py))
 
 
 if __name__ == "__main__":
