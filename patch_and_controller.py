@@ -61,10 +61,11 @@ def patch(filepath: str) -> None:
     patch_code = '''
 __PATCH_MARKER__
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# Monkey-patch: swipe safe zone + text 한글 지원
+# Monkey-patch: swipe safe zone + text 한글 지원 + XML dump 재시도
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 import subprocess as _sp
 import re as _re
+import time as _time
 
 # ── 1. Swipe Safe Zone ─────────────────────────────────────────────────────
 
@@ -157,6 +158,43 @@ def _unicode_text(self, input_str):
     return f"ERROR: 유니코드 입력 실패: {input_str}"
 
 __CLASS_NAME__.text = _unicode_text
+
+
+# ── 3. get_xml 재시도 — uiautomator dump 실패 시 최대 3회 재시도 ──────────
+
+_original_get_xml = __CLASS_NAME__.get_xml
+
+def _retry_get_xml(self, prefix, save_dir, max_retries=3, wait_sec=3):
+    """uiautomator dump 실패 시 대기 후 재시도. 화면 전환 중 dump 실패 방지."""
+    for attempt in range(max_retries):
+        result = _original_get_xml(self, prefix, save_dir)
+        if result != "ERROR":
+            return result
+        if attempt < max_retries - 1:
+            print(f"[XML Retry] uiautomator dump 실패, {wait_sec}초 후 재시도 ({attempt+1}/{max_retries})...")
+            _time.sleep(wait_sec)
+    print(f"[XML Retry] {max_retries}회 모두 실패. 화면 전환 대기 중일 수 있습니다.")
+    return "ERROR"
+
+__CLASS_NAME__.get_xml = _retry_get_xml
+
+
+# ── 4. get_screenshot 재시도 — screencap 실패 시 ─────────────────────────
+
+_original_get_screenshot = __CLASS_NAME__.get_screenshot
+
+def _retry_get_screenshot(self, prefix, save_dir, max_retries=2, wait_sec=2):
+    """screencap 실패 시 대기 후 재시도."""
+    for attempt in range(max_retries):
+        result = _original_get_screenshot(self, prefix, save_dir)
+        if result != "ERROR":
+            return result
+        if attempt < max_retries - 1:
+            print(f"[Screenshot Retry] 실패, {wait_sec}초 후 재시도 ({attempt+1}/{max_retries})...")
+            _time.sleep(wait_sec)
+    return "ERROR"
+
+__CLASS_NAME__.get_screenshot = _retry_get_screenshot
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # End of monkey-patch

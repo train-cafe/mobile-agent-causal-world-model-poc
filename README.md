@@ -482,6 +482,45 @@ wrapper = CausalWrapper(task_goal, precondition_checker=VLMPreconditionChecker(m
 
 ## 트러블슈팅
 
+### 에뮬레이터 성능 최적화 (버벅거림/느림/앱 크래시)
+
+Google Play 이미지는 백그라운드 서비스가 많아 무겁습니다:
+
+```bash
+# 1. AVD RAM 늘리기 (4GB → 8GB)
+#    Android Studio → Device Manager → 해당 AVD 연필(Edit) → Show Advanced
+#    → RAM: 8192 MB
+
+# 2. GPU 가속 확인 (host GPU 사용)
+emulator -avd Pixel_6_Play -gpu host &
+
+# 3. 불필요한 Google 서비스 비활성화 (에뮬 안에서)
+adb shell pm disable-user --user 0 com.google.android.gms.policy_sidecar_ota
+adb shell pm disable-user --user 0 com.google.android.apps.wellbeing
+adb shell pm disable-user --user 0 com.google.android.apps.safetyhub
+
+# 4. 애니메이션 끄기 (속도 향상)
+adb shell settings put global window_animation_scale 0
+adb shell settings put global transition_animation_scale 0
+adb shell settings put global animator_duration_scale 0
+
+# 5. 해상도 낮추기 (선택)
+adb shell wm size 720x1600    # 원래: 1080x2400
+adb shell wm size reset       # 복원
+```
+
+### uiautomator dump 실패 (XML 파일 없음)
+
+```
+adb: error: failed to stat remote object '/sdcard/...xml': No such file or directory
+```
+
+화면 전환 중 `uiautomator dump`가 실패하는 경우입니다.
+패치 적용 시 자동 재시도(3회, 3초 간격)가 동작합니다:
+```bash
+SERVER_IP="127.0.0.1" bash 07_local_setup.sh   # 패치 재적용
+```
+
 ### 에뮬레이터가 안 열림 / 창을 닫은 후 재시작
 
 ```bash
