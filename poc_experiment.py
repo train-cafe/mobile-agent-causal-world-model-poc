@@ -34,6 +34,7 @@ import glob as glob_mod
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -551,9 +552,18 @@ def run_scenario(scenario_name: str, mode: str, rounds: int) -> dict:
                 results["error_counts"][ec_name] += 1
                 print(f"  Error detected: {ec_name} — {ec_info['description']}")
 
-    RESULTS_DIR.mkdir(parents=True, exist_ok=True)
-    _save_results(results, scenario_name, mode)
+    # 결과 저장 + 이미지/로그 복사 + HTML 리포트
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = RESULTS_DIR / f"{scenario_name}_{mode}_{ts}"
+    run_dir.mkdir(parents=True, exist_ok=True)
+
+    _copy_task_artifacts(results, run_dir)
+    _save_results_to(results, run_dir / "results.json")
+    _generate_html_report(results, scenario, run_dir)
     _print_round_summary(results, scenario)
+
+    print(f"\n  Results + images: {run_dir}")
+    print(f"  HTML report:      {run_dir / 'report.html'}")
     return results
 
 
@@ -646,6 +656,7 @@ def _run_single_round(
             "stdout": stdout[:10000],
             "appagent_log": "",
             "log_file": "",
+            "task_dir": "",
         }
     except Exception as e:
         print(f"  | [ERROR] {e}")
@@ -654,13 +665,15 @@ def _run_single_round(
     print(f"  {'─'*50}")
     print(f"  Exit code: {proc.returncode} | Elapsed: {elapsed:.1f}s")
 
-    # AppAgent가 생성한 로그 파일 찾기
+    # AppAgent가 생성한 로그/이미지 파일 찾기
     appagent_log = ""
     new_tasks = set(tasks_dir.glob("task_*")) - existing_tasks if tasks_dir.exists() else set()
     log_file = None
     steps_used = 0
+    task_dir_path = ""
     if new_tasks:
         task_dir = max(new_tasks, key=lambda p: p.stat().st_mtime)
+        task_dir_path = str(task_dir)
         log_files = list(task_dir.glob("log_*.txt"))
         if log_files:
             log_file = log_files[0]
@@ -674,7 +687,6 @@ def _run_single_round(
     failure_reason = ""
     if not task_complete:
         if proc.returncode != 0:
-            # 마지막 몇 줄에서 실제 에러 메시지 추출
             last_lines = stdout.strip().split("\n")[-5:]
             error_hint = " | ".join(l.strip() for l in last_lines if l.strip())[:200]
             failure_reason = f"exit code {proc.returncode}: {error_hint}"
@@ -695,6 +707,7 @@ def _run_single_round(
         "stdout": stdout[:10000],
         "appagent_log": appagent_log[:20000],
         "log_file": str(log_file) if log_file else "",
+        "task_dir": task_dir_path,
     }
 
 
@@ -709,6 +722,7 @@ def _make_fail_result(round_idx: int, reason: str) -> dict:
         "stdout": "",
         "appagent_log": "",
         "log_file": "",
+        "task_dir": "",
     }
 
 
@@ -754,27 +768,161 @@ def _launch_app(package: str) -> None:
         pass
 
 
-def _save_results(results: dict, scenario_name: str, mode: str) -> None:
-    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = RESULTS_DIR / f"{scenario_name}_{mode}_{ts}.json"
+def _copy_task_artifacts(results: dict, run_dir: Path) -> None:
+    """각 라운드의 AppAgent task 디렉토리(스크린샷+로그)를 결과 디렉토리로 복사."""
+    for rd in results.get("round_details", []):
+        src = rd.get("task_dir", "")
+        if not src or not Path(src).exists():
+            continue
+        round_n = rd.get("round", 0)
+        dst = run_dir / f"round_{round_n}"
+        try:
+            shutil.copytree(src, dst, dirs_exist_ok=True)
+            rd["artifacts_dir"] = str(dst)
+            print(f"  Copied round {round_n} artifacts → {dst}")
+        except Exception as e:
+            print(f"  Warning: failed to copy round {round_n} artifacts: {e}")
 
-    # round_details의 stdout/appagent_log를 별도 파일로 분리 (JSON 크기 관리)
-    details_dir = RESULTS_DIR / "logs"
-    details_dir.mkdir(parents=True, exist_ok=True)
+
+def _save_results_to(results: dict, filepath: Path) -> None:
+    """결과 JSON 저장. 큰 텍스트는 별도 파일로 분리."""
+    # stdout/appagent_log → 별도 파일
     for rd in results.get("round_details", []):
         round_n = rd.get("round", 0)
-        # stdout/appagent_log → 별도 파일, 결과 JSON에는 경로만 기록
         for key in ("stdout", "appagent_log"):
             content = rd.get(key, "")
             if len(content) > 500:
-                log_filename = f"{scenario_name}_{mode}_{ts}_r{round_n}_{key}.txt"
-                log_path = details_dir / log_filename
+                log_path = filepath.parent / f"round_{round_n}_{key}.txt"
                 log_path.write_text(content, encoding="utf-8")
-                rd[key] = f"[see logs/{log_filename}]"
+                rd[key] = f"[see {log_path.name}]"
 
-    with open(filename, "w", encoding="utf-8") as f:
+    with open(filepath, "w", encoding="utf-8") as f:
         json.dump(results, f, ensure_ascii=False, indent=2)
-    print(f"\nResults saved: {filename}")
+
+
+def _generate_html_report(results: dict, scenario: dict, run_dir: Path) -> None:
+    """
+    각 라운드의 step별 VLM 입력 이미지 + VLM 응답 + 결과를 보여주는 HTML 리포트 생성.
+
+    AppAgent 로그 형식 (각 줄이 JSON):
+      {"step": N, "prompt": "...", "image": "..._labeled.png", "response": "..."}
+
+    AppAgent 저장 이미지:
+      - *_N.png          : 원본 스크린샷 (VLM에 보내기 전)
+      - *_N_labeled.png  : UI 요소 번호가 표시된 이미지 (VLM에 실제 전송)
+    """
+    html_parts = [
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>",
+        "<title>PoC Report — {scenario} ({mode})</title>".format(
+            scenario=results.get("scenario", ""), mode=results.get("mode", "")),
+        "<style>",
+        "body { font-family: -apple-system, sans-serif; margin: 20px; background: #f5f5f5; }",
+        "h1 { color: #333; } h2 { color: #555; border-bottom: 2px solid #ddd; padding-bottom: 5px; }",
+        "h3 { color: #666; margin-top: 20px; }",
+        ".round { background: white; border-radius: 8px; padding: 20px; margin: 15px 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1); }",
+        ".step { display: flex; gap: 20px; margin: 15px 0; padding: 15px; border: 1px solid #e0e0e0; border-radius: 6px; }",
+        ".step-images { flex-shrink: 0; }",
+        ".step-images img { max-width: 250px; height: auto; border: 1px solid #ccc; border-radius: 4px; }",
+        ".step-text { flex: 1; }",
+        ".step-text pre { background: #f8f8f8; padding: 10px; border-radius: 4px; white-space: pre-wrap; word-wrap: break-word; font-size: 13px; max-height: 300px; overflow-y: auto; }",
+        ".success { color: #2e7d32; } .fail { color: #c62828; }",
+        ".action { background: #e3f2fd; padding: 8px; border-radius: 4px; font-family: monospace; font-size: 14px; }",
+        ".meta { color: #888; font-size: 13px; }",
+        "</style></head><body>",
+    ]
+
+    scenario_name = results.get("scenario", "")
+    mode = results.get("mode", "")
+    html_parts.append(f"<h1>PoC Report: {scenario_name}</h1>")
+    html_parts.append(f"<p class='meta'>Mode: <b>{mode.upper()}</b> | "
+                      f"CAUSAL: {'ON' if results.get('causal_enabled') else 'OFF'} | "
+                      f"Timestamp: {results.get('timestamp', '')}</p>")
+    html_parts.append(f"<p>Task: <i>{scenario.get('task', '')}</i></p>")
+
+    n = results.get("rounds_completed", 0)
+    s = results.get("success_count", 0)
+    html_parts.append(f"<h2>Summary: {s}/{n} rounds succeeded</h2>")
+
+    for rd in results.get("round_details", []):
+        round_n = rd.get("round", 0)
+        ok = rd.get("task_complete", False)
+        status_class = "success" if ok else "fail"
+        status_text = "SUCCESS" if ok else f"FAIL — {rd.get('failure_reason', '')}"
+
+        html_parts.append(f"<div class='round'>")
+        html_parts.append(f"<h2>Round {round_n} — <span class='{status_class}'>{status_text}</span></h2>")
+        html_parts.append(f"<p class='meta'>Steps: {rd.get('steps_used', 0)} | "
+                          f"Time: {rd.get('elapsed_seconds', 0)}s</p>")
+
+        # 로그 파일 파싱 → step별 이미지 + 응답
+        round_dir = run_dir / f"round_{round_n}"
+        log_files = list(round_dir.glob("log_*.txt")) if round_dir.exists() else []
+
+        if log_files:
+            log_content = log_files[0].read_text(encoding="utf-8", errors="replace")
+            for line in log_content.strip().splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+
+                step = entry.get("step", "?")
+                response = entry.get("response", "")
+                image_name = entry.get("image", "")
+
+                # 원본 스크린샷 이름 추출 (labeled → 원본)
+                original_image = image_name.replace("_labeled", "")
+
+                html_parts.append(f"<div class='step'>")
+                html_parts.append(f"<div class='step-images'>")
+                html_parts.append(f"<p><b>Step {step}</b></p>")
+
+                # labeled 이미지 (VLM에 보낸 것)
+                labeled_path = round_dir / image_name
+                if labeled_path.exists():
+                    html_parts.append(f"<p style='font-size:11px;color:#888'>VLM Input:</p>")
+                    html_parts.append(f"<img src='round_{round_n}/{image_name}' title='VLM input'>")
+
+                # 원본 스크린샷
+                orig_path = round_dir / original_image
+                if orig_path.exists() and original_image != image_name:
+                    html_parts.append(f"<p style='font-size:11px;color:#888;margin-top:8px'>Original:</p>")
+                    html_parts.append(f"<img src='round_{round_n}/{original_image}' title='Original screenshot'>")
+
+                html_parts.append(f"</div>")
+
+                # VLM 응답
+                html_parts.append(f"<div class='step-text'>")
+                html_parts.append(f"<h3>Step {step} — VLM Response</h3>")
+
+                # 응답에서 Action 추출
+                action_match = re.search(r"Action:\s*\n?(.*?)(?:\n|$)", response)
+                if action_match:
+                    html_parts.append(f"<div class='action'>{action_match.group(1).strip()}</div>")
+
+                html_parts.append(f"<pre>{_html_escape(response)}</pre>")
+                html_parts.append(f"</div></div>")
+
+        else:
+            html_parts.append(f"<p class='meta'>No step-level log available for this round.</p>")
+
+        html_parts.append(f"</div>")
+
+    html_parts.append("</body></html>")
+
+    report_path = run_dir / "report.html"
+    report_path.write_text("\n".join(html_parts), encoding="utf-8")
+
+
+def _html_escape(text):
+    """HTML 특수문자 이스케이프."""
+    return (text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;"))
 
 
 def _print_round_summary(results: dict, scenario: dict) -> None:
