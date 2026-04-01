@@ -588,7 +588,10 @@ def _run_single_round(
         return _make_fail_result(round_idx, f"task_executor.py not found: {task_script}")
 
     task_text = scenario["task"]
-    stdin_input = f"y\n{task_text}\n"
+    # coordinate_executor.py: input() 1회 (태스크만)
+    # task_executor.py: input() 2회 (docs 확인 "y" + 태스크)
+    is_coordinate = "coordinate_executor" in task_script
+    stdin_input = f"{task_text}\n" if is_coordinate else f"y\n{task_text}\n"
 
     # 환경변수 구성
     env = os.environ.copy()
