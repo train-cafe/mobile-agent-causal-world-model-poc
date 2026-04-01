@@ -183,6 +183,14 @@ else
     echo "   ⚠️  causal_action_wrapper.py 없음 — 액션 래퍼 미설치"
 fi
 
+# coordinate_executor.py 복사 (좌표 직접 출력 모드)
+COORD_EXEC_SRC="${SCRIPT_DIR}/coordinate_executor.py"
+COORD_EXEC_DST="${APPAGENT_DIR}/scripts/coordinate_executor.py"
+if [[ -f "${COORD_EXEC_SRC}" ]]; then
+    cp "${COORD_EXEC_SRC}" "${COORD_EXEC_DST}"
+    echo "   → coordinate_executor.py 복사 완료: ${COORD_EXEC_DST}"
+fi
+
 TASK_EXECUTOR="${APPAGENT_DIR}/scripts/task_executor.py"
 PATCH_SCRIPT="${SCRIPT_DIR}/patch_task_executor.py"
 
