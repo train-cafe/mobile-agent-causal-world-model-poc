@@ -7,7 +7,7 @@ AppAgent에 Pearl's Causality Ladder Level 2 (Intervention) 추론 + 액션 검�
 │           로컬 PC                     │     │       원격 서버 (H100 x2)   │
 │                                      │     │                             │
 │  Android 에뮬레이터                   │     │  vLLM                       │
-│  (KVM 가속 + GPU 렌더링)              │     │  Qwen3-VL-32B-Instruct      │
+│  (KVM 가속 + GPU 렌더링)              │     │  Qwen3.5-35B-A3B (MoE)      │
 │       ↕ ADB                          │ SSH │  port 8080                  │
 │  AppAgent                            │◄───►│  tensor-parallel=2          │
 │  + CausalWrapper (프롬프트 + 액션)   │tunnel│                             │
@@ -424,59 +424,196 @@ python poc_experiment.py --list
 
 ## CausalWrapper 설명
 
-### 아키텍처
+### 배경: Pearl's Causality Ladder와 모바일 에이전트
+
+Pearl의 인과성 사다리(Causality Ladder)는 3단계로 나뉩니다:
+
+| 레벨 | 이름 | 질문 | 모바일 에이전트 예시 |
+|---|---|---|---|
+| L1 | **Association** (관찰) | "이 화면에서 보통 어떤 버튼을 누르나?" | 일반 VLM이 하는 것: 스크린샷을 보고 다음 행동 예측 |
+| L2 | **Intervention** (개입) | "이 버튼을 누르면 어떤 상태가 되나?" | **CausalWrapper가 추가하는 것**: 행동 전에 결과를 예측하고 검증 |
+| L3 | **Counterfactual** (반사실) | "다른 버튼을 눌렀으면 어떻게 됐을까?" | 향후 확장 가능 |
+
+기존 모바일 에이전트(AppAgent 등)는 **L1만 수행**: 화면을 보고 다음 행동을 출력합니다. "이 버튼을 누르면 결제가 진행된다"는 인과 추론 없이, 단순히 "이 화면에서 보통 이 버튼을 누른다"는 연관(association)만으로 행동합니다.
+
+CausalWrapper는 **L2 Intervention**을 추가합니다: VLM이 제안한 행동을 실행하기 전에 "이 행동의 결과가 태스크 목표와 일치하는가?"를 검증합니다.
+
+### 전체 아키텍처
+
+CausalWrapper는 두 개의 모듈로 구성됩니다:
 
 ```
-AppAgent 메인 루프:
+에이전트 메인 루프:
     스크린샷 캡처
     ↓
     프롬프트 빌드
     ↓
-    ★ causal_wrapper.wrap_prompt()     ← 프롬프트 래퍼
+    ★ [모듈 1] Prompt Wrapper (causal_wrapper.py)
+    │  VLM 프롬프트에 인과 추론 가이드를 주입
+    │  → "이 행동의 결과를 예측하라"
+    │  → 이전 행동 히스토리 제공
+    │  → 비가역 행동 경고
     ↓
-    VLM 호출 (Qwen3-VL-32B)
+    VLM 호출 (Qwen3.5-35B-A3B)
     ↓
     응답 파싱 → proposed_action
     ↓
-    ★ elem_list 범위 검증              ← IndexError 방어
-    ★ action_wrapper.evaluate()        ← 액션 래퍼 (3단계)
-        A. Precondition Check
-        B. State Transition Check
-        C. Irreversible Guard
+    ★ [모듈 2] Action Verifier (causal_action_wrapper.py)
+    │  VLM이 제안한 행동을 3단계로 검증
+    │  → Step 1. Precondition Check (사전조건)
+    │  → Step 2. State Transition Check (상태전이)
+    │  → Step 3. Irreversible Guard (비가역 방어)
     ↓
-    통과 → ADB 실행 (tap/swipe/text)
-    차단 → 스킵 + 로그 + 다음 라운드
+    통과 → ADB 실행 (click/type/press)
+    차단 → 스킵 + 사유 로그 + 다음 라운드
 ```
 
-### 액션 래퍼 3단계
+**모듈 1 (Prompt Wrapper)** 은 VLM의 추론 품질을 높이는 **사전 개입**이고,
+**모듈 2 (Action Verifier)** 는 VLM 출력을 실행 전에 걸러내는 **사후 검증**입니다.
 
-**A. Precondition Check** — 사전조건 검증
-- 로딩 상태 감지 → 대기 권고
-- 장바구니 담기 시 상품 상세 페이지 미경유 → 차단
-- 필수 옵션 미선택 → 차단
+### Action Verifier 3단계
 
-**B. State Transition Consistency** — 상태 전이 일관성
-- 직전 tap/swipe 후 화면 변화 없음 → 액션 미작동 감지
-- 동일 화면 3회 연속 반복 → 다른 접근법 권고
-- 뒤로가기 후 페이지 미변경 → 네비게이션 실패
+VLM이 제안한 행동을 실행 전에 순서대로 검증합니다. 하나라도 실패하면 행동을 차단하고 다음 라운드로 넘어갑니다.
 
-**C. Irreversible Action Guard** — 비가역 방어
-- 결제/삭제/비우기 키워드 감지
-- task_goal과 대조하여 불일치 시 차단
-- 일치 시 허용
+#### Step 1. Precondition Check (사전조건 검증)
 
-### VLM critic으로 교체
+**목적**: 현재 화면 상태가 해당 행동의 전제조건을 충족하는지 확인.
+
+**왜 필요한가**: VLM은 "장바구니 담기" 버튼이 보이면 바로 누르려 합니다. 하지만 사이즈/색상 같은 필수 옵션을 선택하지 않으면 오류 팝업이 뜨고, 에이전트는 이를 복구하지 못해 태스크가 실패합니다.
+
+**검증 규칙**:
+| 규칙 | 감지 조건 | 차단 사유 |
+|---|---|---|
+| 로딩 상태 | "로딩", "loading", "처리 중" 키워드 | 화면 전환 미완료 — 대기 필요 |
+| 상품 페이지 미경유 | "담기" 시도인데 히스토리에 상품 상세 없음 | 상품 선택 → 옵션 → 담기 순서 위반 |
+| 필수 옵션 미선택 | "옵션을 선택", "필수 선택" 키워드 | 옵션 먼저 선택 필요 |
+
+**효과**: 쿠팡에서 사이즈 미선택 후 담기 시도 → 차단 → VLM이 다음 라운드에서 사이즈 선택으로 방향 수정.
+
+#### Step 2. State Transition Check (상태 전이 검증)
+
+**목적**: 직전 행동이 실제로 화면 변화를 일으켰는지 확인. 같은 행동을 반복하며 진전이 없는 루프를 감지.
+
+**왜 필요한가**: VLM은 "이 버튼을 눌러야 한다"고 판단하면, 실제로 클릭이 안 먹혀도 같은 행동을 계속 반복합니다. 특히 스크롤이 필요한 화면에서 보이지 않는 요소를 계속 탭하거나, 애니메이션 중에 탭해서 무시되는 경우가 빈번합니다.
+
+**검증 규칙**:
+| 규칙 | 감지 조건 | 차단 사유 |
+|---|---|---|
+| 화면 미변경 | 직전 행동의 summary와 현재 summary가 Jaccard 유사도 > 0.7 | 행동 미작동 — 다른 접근 필요 |
+| 3회 연속 반복 | 같은 화면에서 3회 연속 유사 행동 | 무한 루프 — 다른 전략 필요 |
+| 뒤로가기 실패 | "뒤로가기" 행동 후 화면 동일 | 네비게이션 실패 |
+
+**효과**: 설정 앱에서 "개발자 옵션"을 찾으려고 같은 메뉴를 반복 탭 → 2회 차단 → VLM이 스크롤로 전략 변경.
+
+#### Step 3. Irreversible Guard (비가역 행동 방어)
+
+**목적**: 결제, 삭제, 주문 등 되돌릴 수 없는 행동이 태스크 목표와 일치하는지 확인.
+
+**왜 필요한가**: VLM은 "바로구매"와 "장바구니 담기"의 차이를 이해하지만, UI에서 두 버튼이 나란히 있을 때 잘못된 버튼을 누르는 경우가 있습니다. 특히 "가격만 확인"이 목표인데 "구매하기"를 누르면 돌이킬 수 없습니다.
+
+**검증 규칙**:
+| 감지 키워드 | 허용 조건 | 예시 |
+|---|---|---|
+| 결제/구매/주문 | task_goal에 "결제", "구매", "주문" 포함 시만 허용 | "가격 확인" 태스크에서 "바로구매" → 차단 |
+| 삭제/비우기 | task_goal에 "삭제", "비우기" 포함 시만 허용 | "장바구니 확인" 태스크에서 "전체삭제" → 차단 |
+| 취소 | task_goal에 "취소" 포함 시만 허용 | "상품 담기" 태스크에서 "주문취소" → 차단 |
+
+**효과**: CGV에서 "상영시간 확인만" 태스크인데 "예매하기" 클릭 → 차단 → 실제 결제 방지.
+
+### 왜 Rule-Based로 먼저 구현했는가
+
+| 고려사항 | Rule-Based (현재) | VLM Critic (향후) |
+|---|---|---|
+| **구현 속도** | 즉시 (키워드 매칭) | 프롬프트 설계 + 평가 필요 |
+| **추론 비용** | 0 (문자열 비교) | VLM 호출 1회 추가 (비용 2배) |
+| **지연 시간** | < 1ms | 2~5초 (VLM 응답 대기) |
+| **재현성** | 100% (같은 입력 → 같은 결과) | VLM 응답에 따라 달라짐 |
+| **디버깅** | 규칙이 명확하여 쉬움 | VLM 판단 근거 해석 필요 |
+| **정확도** | 키워드 기반이라 한계 있음 | 맥락 이해 가능하여 높음 |
+
+**PoC 단계에서 Rule-Based가 적합한 이유:**
+1. **실험 변수 통제**: Wrapper 효과를 측정하려면 Wrapper 자체가 결정론적(deterministic)이어야 함. VLM Critic은 호출마다 결과가 달라질 수 있어 실험 재현성이 떨어짐.
+2. **비용/속도**: 매 행동마다 VLM을 한번 더 호출하면 비용과 시간이 2배. PoC에서는 빠른 반복이 중요.
+3. **검증 가능성**: Rule이 실패하면 "어떤 키워드가 매칭됐는지"가 명확. VLM이 실패하면 "왜 이렇게 판단했는지" 추적이 어려움.
+
+### VLM Critic으로 교체하면 뭐가 달라지는가
+
+Rule-Based는 키워드 매칭이라 **다음 상황에서 한계**가 있습니다:
+
+```
+예: "이 상품의 리뷰를 확인해줘" 태스크
+
+Rule-Based:
+  VLM이 "구매하기" 버튼 클릭 제안
+  → Irreversible Guard: "구매" 키워드 감지, task_goal에 "구매" 없음 → 차단 ✓
+
+  VLM이 "상품 비교하기" 버튼 클릭 제안 (리뷰 탭이 아님)
+  → 3단계 모두 통과 (위험 키워드 없음) → 허용 ✗ (잘못된 방향이지만 감지 불가)
+
+VLM Critic:
+  "상품 비교하기"가 "리뷰 확인" 태스크에 도움이 되는가?
+  → VLM이 맥락을 이해하여 "리뷰 탭을 눌러야 한다"고 판단 → 차단 ✓
+```
+
+| 상황 | Rule-Based | VLM Critic |
+|---|---|---|
+| 위험 키워드가 명확한 행동 (구매, 삭제) | 잡음 | 잡음 |
+| 위험하지 않지만 방향이 틀린 행동 | **못 잡음** | 잡음 |
+| 새로운 앱/UI에서 예상 못한 패턴 | **못 잡음** | 맥락으로 판단 가능 |
+| 한국어/영어 혼합 키워드 | 목록에 있어야 감지 | 자연어 이해로 감지 |
+
+### 교체 방법
+
+ABC 인터페이스로 분리되어 있어 구현체만 교체하면 됩니다:
 
 ```python
-# rule-based (현재)
-wrapper = CausalWrapper(task_goal, precondition_checker=RulePreconditionChecker())
+from abc import ABC, abstractmethod
 
-# VLM critic (향후) — ABC 인터페이스만 구현하면 교체 완료
-wrapper = CausalWrapper(task_goal, precondition_checker=VLMPreconditionChecker(mllm))
+# 인터페이스 (변경 없음)
+class BasePreconditionChecker(ABC):
+    @abstractmethod
+    def check(self, action, context) -> (str, str):
+        """Returns (result, reason). result: 'pass' | 'fail' | 'skip'"""
+
+# Rule-Based 구현 (현재)
+class RulePreconditionChecker(BasePreconditionChecker):
+    def check(self, action, context):
+        # 키워드 매칭으로 검증
+        ...
+
+# VLM Critic 구현 (향후)
+class VLMPreconditionChecker(BasePreconditionChecker):
+    def __init__(self, mllm):
+        self.mllm = mllm  # VLM 모델 인스턴스
+
+    def check(self, action, context):
+        prompt = f"""
+        Task: {context['task_goal']}
+        Proposed action: {action.act_name} - {action.summary}
+        History: {context['step_history']}
+        
+        Is this action's precondition satisfied? Answer: pass or fail with reason.
+        """
+        screenshot = context['screenshot_path']
+        status, response = self.mllm.get_model_response(prompt, [screenshot])
+        # VLM 응답 파싱 → (result, reason)
+        ...
+
+# 교체: 한 줄만 변경
+wrapper = CausalWrapper(
+    task_goal,
+    precondition_checker=VLMPreconditionChecker(mllm),      # ← 여기만 변경
+    state_transition_checker=RuleStateTransitionChecker(),    # 혼합 가능
+    irreversible_guard=RuleIrreversibleGuard(),
+)
 ```
 
-교체 대상 클래스: `RulePreconditionChecker`, `RuleStateTransitionChecker`, `RuleIrreversibleGuard`
-인터페이스: `check(action, context) -> (result: str, reason: str)`
+교체 대상 3개 클래스:
+- `RulePreconditionChecker` → `VLMPreconditionChecker`
+- `RuleStateTransitionChecker` → `VLMStateTransitionChecker`
+- `RuleIrreversibleGuard` → `VLMIrreversibleGuard`
+
+Rule과 VLM을 **혼합**하는 것도 가능합니다. 예: 비가역 방어는 Rule로 확실히 잡고, 사전조건은 VLM으로 맥락 판단.
 
 ---
 
@@ -594,7 +731,7 @@ bash 05_setup_vllm.sh
 
 ```
 .
-├── 05_setup_vllm.sh              # [서버] vLLM + Qwen3-VL-32B 서빙
+├── 05_setup_vllm.sh              # [서버] vLLM + Qwen3.5-35B-A3B 서빙
 ├── 02_setup_android_sdk.sh       # [로컬] Android SDK + AVD 생성
 ├── 07_local_setup.sh             # [로컬] AppAgent + CausalWrapper 설정 (메인)
 │
@@ -631,6 +768,6 @@ bash 05_setup_vllm.sh
 
 - [AppAgent](https://github.com/mnotgod96/AppAgent)
 - [vLLM](https://docs.vllm.ai)
-- [Qwen3-VL-32B](https://huggingface.co/Qwen/Qwen3-VL-32B-Instruct)
+- [Qwen3.5-35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B)
 - [ADBKeyboard](https://github.com/nicewook/ADBKeyboard)
 - [Android Emulator CLI](https://developer.android.com/studio/run/emulator-commandline)
