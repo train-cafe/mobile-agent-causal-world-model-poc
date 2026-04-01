@@ -204,6 +204,7 @@ def main():
     parser = argparse.ArgumentParser(description="Coordinate-based Task Executor")
     parser.add_argument("--app", required=True)
     parser.add_argument("--root_dir", default="./")
+    parser.add_argument("--task", default="", help="Task description (skips interactive prompt)")
     args = parser.parse_args()
 
     configs = load_config()
@@ -249,9 +250,13 @@ def main():
         sys.exit()
     print_with_color(f"Screen resolution: {width}x{height}", "yellow")
 
-    # 태스크 입력
-    print_with_color("Please enter the description of the task:", "blue")
-    task_desc = input()
+    # 태스크 입력: --task 인자 우선, 없으면 stdin
+    if args.task:
+        task_desc = args.task
+        print_with_color(f"Task (from args): {task_desc}", "blue")
+    else:
+        print_with_color("Please enter the description of the task:", "blue")
+        task_desc = input()
 
     # 작업 디렉토리 생성
     work_dir = os.path.join(root_dir, "tasks")
