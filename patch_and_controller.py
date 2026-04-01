@@ -196,47 +196,19 @@ def _retry_get_screenshot(self, prefix, save_dir, max_retries=2, wait_sec=2):
 
 __CLASS_NAME__.get_screenshot = _retry_get_screenshot
 
-# ── 5. 키보드 검색 버튼 누르기 헬퍼 ──────────────────────────────────────
-# uiautomator dump에 키보드(IME) 버튼이 잡히지 않는 문제 대응.
-# text 입력 후 검색을 실행하려면 KEYCODE_ENTER를 보내는 것이 확실함.
+# ── 5. enter() 액션 — 키보드 Enter/Search 키 전송 ────────────────────────
 
-_original_tap = __CLASS_NAME__.tap
+def _enter_key(self):
+    """키보드의 Enter/Search/확인 키를 전송."""
+    print("[Enter] KEYCODE_ENTER 전송")
+    ret = _sp.run(
+        ["adb", "-s", self.device, "shell",
+         "input", "keyevent", "KEYCODE_ENTER"],
+        capture_output=True, text=True, timeout=5
+    )
+    return ret.stdout if ret.returncode == 0 else "ERROR"
 
-def _enhanced_tap(self, x, y):
-    """탭 실행. 키보드가 떠있고 탭 위치가 키보드 영역이면 ENTER 키로 대체."""
-    try:
-        _wm = _sp.run(
-            ["adb", "-s", self.device, "shell", "wm", "size"],
-            capture_output=True, text=True, timeout=5
-        ).stdout
-        _m = _re.search(r"(\\d+)x(\\d+)", _wm)
-        _sw, _sh = (int(_m.group(1)), int(_m.group(2))) if _m else (1080, 2400)
-    except Exception:
-        _sw, _sh = 1080, 2400
-
-    # 키보드 영역 감지: 화면 하단 40% 이하이고 키보드가 떠있는지 확인
-    if y > _sh * 0.65:
-        try:
-            _kb_check = _sp.run(
-                ["adb", "-s", self.device, "shell",
-                 "dumpsys", "input_method"],
-                capture_output=True, text=True, timeout=5
-            ).stdout
-            if "mInputShown=true" in _kb_check:
-                # 키보드가 떠있고, 탭 위치가 키보드 영역 → ENTER로 대체
-                print(f"[Keyboard] 키보드 영역 탭 감지 (y={y}/{_sh}). KEYCODE_ENTER로 대체합니다.")
-                ret = _sp.run(
-                    ["adb", "-s", self.device, "shell",
-                     "input", "keyevent", "KEYCODE_ENTER"],
-                    capture_output=True, text=True, timeout=5
-                )
-                return ret.stdout if ret.returncode == 0 else "ERROR"
-        except Exception:
-            pass
-
-    return _original_tap(self, x, y)
-
-__CLASS_NAME__.tap = _enhanced_tap
+__CLASS_NAME__.enter = _enter_key
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # End of monkey-patch
