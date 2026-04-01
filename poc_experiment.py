@@ -577,7 +577,10 @@ def _run_single_round(
     AppAgent가 에뮬레이터에서 각 스텝을 실행하는 과정이 보여야 합니다.
     """
     python_bin = str(APPAGENT_VENV / "bin" / "python")
-    task_script = str(APPAGENT_DIR / "scripts" / "task_executor.py")
+    # 좌표 모드 executor 우선 사용, 없으면 기존 task_executor.py
+    coord_script = APPAGENT_DIR / "scripts" / "coordinate_executor.py"
+    legacy_script = APPAGENT_DIR / "scripts" / "task_executor.py"
+    task_script = str(coord_script if coord_script.exists() else legacy_script)
     app = scenario["app_package"]
 
     if not Path(task_script).exists():
