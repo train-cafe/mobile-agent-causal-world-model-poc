@@ -588,10 +588,7 @@ def _run_single_round(
         return _make_fail_result(round_idx, f"task_executor.py not found: {task_script}")
 
     task_text = scenario["task"]
-    # coordinate_executor.py: input() 1회 (태스크만)
-    # task_executor.py: input() 2회 (docs 확인 "y" + 태스크)
     is_coordinate = "coordinate_executor" in task_script
-    stdin_input = f"{task_text}\n" if is_coordinate else f"y\n{task_text}\n"
 
     # 환경변수 구성
     env = os.environ.copy()
@@ -606,27 +603,37 @@ def _run_single_round(
     existing_tasks = set(tasks_dir.glob("task_*")) if tasks_dir.exists() else set()
 
     start_time = time.time()
-    print(f"  CMD : {python_bin} {task_script} --app {app}")
+
+    # coordinate_executor: --task 인자로 전달 (stdin 불필요)
+    # task_executor: stdin으로 "y\n{task}\n" 전달
+    if is_coordinate:
+        cmd = [python_bin, task_script, "--app", app, "--task", task_text]
+        stdin_input = None
+    else:
+        cmd = [python_bin, task_script, "--app", app]
+        stdin_input = f"y\n{task_text}\n"
+
+    print(f"  CMD : {' '.join(cmd[:4])}{'...' if len(cmd) > 4 else ''}")
     print(f"  TASK: {task_text[:100]}{'...' if len(task_text) > 100 else ''}")
     print(f"  {'─'*50}")
 
     captured_output = []
 
     try:
-        # Popen으로 실시간 출력 + 캡처
         proc = subprocess.Popen(
-            [python_bin, task_script, "--app", app],
+            cmd,
             stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,  # stderr → stdout 합침
+            stderr=subprocess.STDOUT,
             text=True,
             env=env,
             cwd=str(APPAGENT_DIR),
-            bufsize=1,  # 라인 버퍼링
+            bufsize=1,
         )
 
         # stdin 전송 후 닫기
-        proc.stdin.write(stdin_input)
+        if stdin_input:
+            proc.stdin.write(stdin_input)
         proc.stdin.close()
 
         # 실시간 출력 읽기
