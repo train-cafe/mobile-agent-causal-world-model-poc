@@ -2,7 +2,7 @@
 # =============================================================================
 # 05_setup_vllm.sh
 # H100 x2 에서 vLLM OpenAI-compatible 서버 실행
-# - ByteDance-Seed/UI-TARS-1.5-7B (기본)
+# - bytedance-research/UI-TARS-72B-SFT (기본)
 # - GPU 0,1 전용 (GPU 2,3은 에뮬레이터 등이 점유 중)
 # - tensor-parallel-size=2, 포트 8080 (ws-scrcpy 8000과 충돌 방지)
 # =============================================================================
@@ -13,16 +13,15 @@ VENV_DIR="${HOME}/vllm-env"
 VLLM_PORT="${VLLM_PORT:-8080}"
 VLLM_HOST="${VLLM_HOST:-0.0.0.0}"
 TENSOR_PARALLEL="${TENSOR_PARALLEL:-2}"
-GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.90}"
-MAX_MODEL_LEN="${MAX_MODEL_LEN:-16384}"
+GPU_MEM_UTIL="${GPU_MEM_UTIL:-0.95}"
+MAX_MODEL_LEN="${MAX_MODEL_LEN:-8192}"
 
 # GPU 0,1만 사용 (GPU 2,3은 이미 점유됨)
 CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0,1}"
 
-# 모델: UI-TARS-1.5-7B (UI 전용 에이전트, Qwen2-VL 기반, 1.5 버전)
-# H100 x2 = 160GB VRAM, 7B fp16 ≈ 14GB → 매우 여유
-# UI-TARS 1.5는 72B 대비 출력 포맷 안정성 개선
-MODEL="${MODEL:-ByteDance-Seed/UI-TARS-1.5-7B}"
+# 모델: UI-TARS-72B (UI 전용 에이전트, Qwen2-VL-72B 기반)
+# H100 x2 = 160GB VRAM, 72B fp16 ≈ 144GB → 가능 (여유 적음)
+MODEL="${MODEL:-bytedance-research/UI-TARS-72B-SFT}"
 
 LOG_DIR="${HOME}/.vllm/logs"
 VLLM_LOG="${LOG_DIR}/vllm-server.log"
@@ -93,7 +92,7 @@ if [[ "${MODEL_CACHED}" == "yes" ]]; then
     echo "   ✅ 모델 캐시 확인됨: ${MODEL}"
 else
     echo "   → 모델 다운로드 중: ${MODEL}"
-    echo "      (7B 모델 약 14GB)"
+    echo "      (72B 모델 약 140GB, 시간이 걸립니다)"
     # HF_TOKEN 환경변수가 있으면 인증 추가 (private 모델 / rate limit 완화)
     if [[ -n "${HF_TOKEN:-}" ]]; then
         echo "      HF_TOKEN 인증 사용"
