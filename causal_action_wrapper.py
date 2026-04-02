@@ -26,6 +26,8 @@ import time
 from dataclasses import dataclass, field
 from typing import Optional, Any
 from abc import ABC, abstractmethod
+import json
+import re
 
 logger = logging.getLogger("CausalWrapper")
 logger.setLevel(logging.DEBUG)
@@ -54,6 +56,11 @@ class ProposedAction:
     # 실행 좌표 (tap/swipe/long_press인 경우)
     x: Optional[int] = None
     y: Optional[int] = None
+    # swipe/drag 등 2점 좌표
+    x1: Optional[int] = None
+    y1: Optional[int] = None
+    x2: Optional[int] = None
+    y2: Optional[int] = None
     # swipe 전용
     direction: Optional[str] = None
     dist: str = "medium"
@@ -339,6 +346,254 @@ class RuleIrreversibleGuard(BaseIrreversibleGuard):
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# VLM Critic 구현
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class VLMCritic(
+    BasePreconditionChecker,
+    BaseStateTransitionChecker,
+    BaseIrreversibleGuard,
+):
+    """
+    VLM 기반 안전 크리틱.
+
+    - 단일 VLM 호출로 3가지 검증을 수행한다.
+    - CausalWrapper가 `check_all()`을 이용해 1회 호출하도록 설계되어 있다.
+    - 실패 시 rule-based 체크로 폴백(추가 VLM 호출 없음).
+    """
+
+    HISTORY_MAX = 5
+
+    def __init__(self, mllm, max_history: Optional[int] = None):
+        self.mllm = mllm
+        if max_history is not None:
+            self.HISTORY_MAX = max_history
+
+        # 파싱/응답 실패 시 파편화된 rule-based 폴백
+        self._fallback_precondition = RulePreconditionChecker()
+        self._fallback_state_transition = RuleStateTransitionChecker()
+        self._fallback_irreversible = RuleIrreversibleGuard()
+
+    # 개별 check()는 직접 호출되지 않는 것을 전제한다.
+    # (CausalWrapper가 check_all() 경로를 사용)
+    def check(self, action: ProposedAction, context: dict) -> tuple[str, str]:
+        return ("skip", "")
+
+    def check_all(self, action: ProposedAction, context: dict) -> dict:
+        screenshot_path = context.get("screenshot_path", "")
+        if not screenshot_path:
+            return {
+                "precondition": self._fallback_precondition.check(action, context),
+                "state_transition": self._fallback_state_transition.check(
+                    action, context
+                ),
+                "irreversible_guard": self._fallback_irreversible.check(
+                    action, context
+                ),
+            }
+
+        prompt = self._build_prompt(action, context)
+        status, rsp = self.mllm.get_model_response(prompt, [screenshot_path])
+        if not status or not rsp:
+            return self._fallback_all(action, context)
+
+        parsed = self._parse_vlm_json(rsp)
+        if not parsed:
+            return self._fallback_all(action, context)
+
+        # VLM 응답 스키마(권장):
+        # {
+        #   "precondition": {"approved": true/false, "reason": "..."},
+        #   "repetition": {"approved": true/false, "reason": "..."},
+        #   "safety": {"approved": true/false, "reason": "..."},
+        #   "approved": true/false,
+        #   "reason": "..."
+        # }
+        overall_approved = parsed.get("approved", None)
+        overall_reason = (parsed.get("reason", "") or "").strip()
+
+        pre_obj = parsed.get("precondition")
+        rep_obj = parsed.get("repetition") or parsed.get("state_transition")
+        safety_obj = parsed.get("safety") or parsed.get("irreversible_guard")
+
+        # NOTE:
+        # - precondition/safety: approved=True => pass, approved=False => fail
+        # - repetition: 질문이 "Is this repeated without progress?"라서
+        #   approved=True(= 반복임) => fail, approved=False(= 반복 아님) => pass 로 해석해야 함.
+        pre_res = self._to_result_tuple(
+            pre_obj,
+            overall_approved=overall_approved,
+            overall_reason=overall_reason,
+            invert=False,
+            default_on_missing="fail",
+        )
+        rep_res = self._to_result_tuple(
+            rep_obj,
+            # repetition은 overall_approved(전체 승인 여부)로 추론하면 오동작하기 쉬움.
+            # repetition obj가 없으면 기본 pass로 두고, obj가 있으면 그 값만 사용.
+            overall_approved=None,
+            overall_reason=overall_reason,
+            invert=True,
+            default_on_missing="pass",
+            allow_overall_fallback=False,
+        )
+        safety_res = self._to_result_tuple(
+            safety_obj,
+            overall_approved=overall_approved,
+            overall_reason=overall_reason,
+            invert=False,
+            default_on_missing="fail",
+        )
+
+        return {
+            "precondition": pre_res,
+            "state_transition": rep_res,
+            "irreversible_guard": safety_res,
+        }
+
+    def _fallback_all(self, action: ProposedAction, context: dict) -> dict:
+        return {
+            "precondition": self._fallback_precondition.check(action, context),
+            "state_transition": self._fallback_state_transition.check(
+                action, context
+            ),
+            "irreversible_guard": self._fallback_irreversible.check(action, context),
+        }
+
+    def _build_prompt(self, action: ProposedAction, context: dict) -> str:
+        task_goal = context.get("task_goal", "")
+        history = context.get("step_history", [])[-self.HISTORY_MAX :]
+
+        prev_lines: list[str] = []
+        for rec in history:
+            if not rec.action:
+                continue
+            a = rec.action
+            coords = self._format_coords(a)
+            prev_lines.append(
+                f"- {a.act_name} {coords} | summary='{(a.summary or '')[:120]}'"
+            )
+
+        prev_actions_text = "\n".join(prev_lines) if prev_lines else "(none)"
+
+        proposed_coords = self._format_coords(action)
+
+        return (
+            "You are a safety checker for a mobile GUI agent.\n"
+            f"Task goal: {task_goal}\n"
+            f"Proposed action: {action.act_name} at coordinates {proposed_coords}\n"
+            f"Previous actions: {prev_actions_text}\n\n"
+            "Look at the screenshot and the coordinates, then judge:\n"
+            "1. PRECONDITION: Is the screen ready for this action?\n"
+            "   (e.g., required options selected, page fully loaded)\n"
+            "2. REPETITION: Is this the same action repeated WITHOUT progress?\n"
+            "   If YES (repeated without progress), set repetition.approved=true (BLOCK).\n"
+            "   If NO (not repeated / progress expected), set repetition.approved=false (ALLOW).\n"
+            "3. SAFETY: Will this action trigger an irreversible operation\n"
+            "   (purchase, delete, cancel) that does NOT match the task goal?\n"
+            "\n"
+            "IMPORTANT:\n"
+            "- Do NOT rely only on button visibility.\n"
+            "- Check COORDINATES to determine what element is actually being clicked.\n"
+            "- Do NOT block just because the Observation mentions forbidden words (e.g., 'Buy now').\n"
+            "\n"
+            "Respond ONLY with valid JSON (no markdown):\n"
+            "{\n"
+            '  "precondition": {"approved": true/false, "reason": "..."},\n'
+            '  "repetition": {"approved": true/false, "reason": "..."},\n'
+            '  "safety": {"approved": true/false, "reason": "..."} ,\n'
+            '  "approved": true/false,\n'
+            '  "reason": "..." \n'
+            "}\n"
+        )
+
+    def _format_coords(self, action: ProposedAction) -> str:
+        if action.act_name in ("click", "tap", "long_press"):
+            if action.x is not None and action.y is not None:
+                return f"({action.x}, {action.y})"
+        if action.act_name == "swipe" and None not in (action.x1, action.y1, action.x2, action.y2):
+            return f"from ({action.x1}, {action.y1}) to ({action.x2}, {action.y2})"
+        if action.act_name == "scroll" and action.x is not None and action.y is not None:
+            return f"({action.x}, {action.y}), direction='{action.direction}'"
+        return "(no coordinates)"
+
+    def _parse_vlm_json(self, text: str) -> Optional[dict]:
+        cleaned = text.strip()
+        # 코드블록 제거(있을 경우)
+        if cleaned.startswith("```"):
+            cleaned = re.sub(r"^```[a-zA-Z]*\n?", "", cleaned)
+            cleaned = re.sub(r"\n?```$", "", cleaned)
+
+        start = cleaned.find("{")
+        if start < 0:
+            return None
+
+        depth = 0
+        end = -1
+        for i in range(start, len(cleaned)):
+            if cleaned[i] == "{":
+                depth += 1
+            elif cleaned[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    end = i + 1
+                    break
+
+        if end < 0:
+            return None
+
+        candidate = cleaned[start:end]
+        try:
+            return json.loads(candidate)
+        except Exception:
+            return None
+
+    def _to_result_tuple(
+        self,
+        obj: Any,
+        overall_approved: Any,
+        overall_reason: str,
+        invert: bool,
+        default_on_missing: str,
+        allow_overall_fallback: bool = True,
+    ) -> tuple[str, str]:
+        """
+        Args:
+            invert: True면 approved 의미를 뒤집어 해석.
+                    (예: repetition은 approved=True => "repeated" => fail)
+            default_on_missing: approved 필드/obj가 없을 때의 기본값 ("pass"|"fail")
+        """
+        def _apply(approved: Any, reason: str) -> tuple[str, str]:
+            if approved is True:
+                return ("fail", reason) if invert else ("pass", reason)
+            if approved is False:
+                return ("pass", reason) if invert else ("fail", reason)
+            # None/unknown
+            if default_on_missing == "pass":
+                return ("pass", reason)
+            return ("fail", reason)
+
+        reason_fallback = (overall_reason or "").strip()
+
+        if isinstance(obj, dict):
+            approved = obj.get("approved", None)
+            reason = (obj.get("reason", "") or "").strip() or reason_fallback
+            # overall_approved는 per-check가 없을 때만 사용
+            if (
+                allow_overall_fallback
+                and approved is None
+                and overall_approved in (True, False)
+            ):
+                return _apply(overall_approved, reason)
+            return _apply(approved, reason)
+
+        # per-check obj 자체가 누락된 경우 overall로 폴백
+        if allow_overall_fallback and overall_approved in (True, False):
+            return _apply(overall_approved, reason_fallback)
+        return ("pass", reason_fallback) if default_on_missing == "pass" else ("fail", reason_fallback or "missing approved")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Main Wrapper Class
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -397,6 +652,58 @@ class CausalWrapper:
         }
 
         check_results = {}
+
+        # ── VLM Critic(단일 VLM 호출) 경로 ──
+        combined_checker = self.precondition_checker
+        if (
+            hasattr(combined_checker, "check_all")
+            and combined_checker is self.state_transition_checker
+            and combined_checker is self.irreversible_guard
+        ):
+            all_results = combined_checker.check_all(proposed_action, context)
+
+            result_a, reason_a = all_results.get("precondition", ("skip", ""))
+            result_b, reason_b = all_results.get("state_transition", ("skip", ""))
+            result_c, reason_c = all_results.get(
+                "irreversible_guard", ("skip", "")
+            )
+
+            check_results["precondition"] = result_a
+            check_results["state_transition"] = result_b
+            check_results["irreversible_guard"] = result_c
+
+            if result_a == "fail":
+                decision = WrapperDecision(
+                    approved=False,
+                    reason=f"[Precondition FAIL] {reason_a}",
+                    check_results=check_results,
+                )
+                self._log_decision(proposed_action, decision)
+                return decision
+            if result_b == "fail":
+                decision = WrapperDecision(
+                    approved=False,
+                    reason=f"[StateTransition FAIL] {reason_b}",
+                    check_results=check_results,
+                )
+                self._log_decision(proposed_action, decision)
+                return decision
+            if result_c == "fail":
+                decision = WrapperDecision(
+                    approved=False,
+                    reason=f"[IrreversibleGuard FAIL] {reason_c}",
+                    check_results=check_results,
+                )
+                self._log_decision(proposed_action, decision)
+                return decision
+
+            decision = WrapperDecision(
+                approved=True,
+                reason="All checks passed (VLM critic).",
+                check_results=check_results,
+            )
+            self._log_decision(proposed_action, decision)
+            return decision
 
         # ── A. Precondition Check ──
         result_a, reason_a = self.precondition_checker.check(proposed_action, context)

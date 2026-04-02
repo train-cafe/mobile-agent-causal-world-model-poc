@@ -13,14 +13,14 @@ Control vs Treatment 비교를 자동화하여
 Usage:
     # Control (Causal OFF)
     export CAUSAL_MODE=false WRAPPER_ENABLED=false
-    python poc_experiment.py --scenario settings_developer_usb_debug --mode control --rounds 3
+    python poc_experiment.py --scenario settings_change_font_size --mode control --rounds 3
 
     # Treatment (Causal ON)
     export CAUSAL_MODE=true WRAPPER_ENABLED=true
-    python poc_experiment.py --scenario settings_developer_usb_debug --mode treatment --rounds 3
+    python poc_experiment.py --scenario settings_change_font_size --mode treatment --rounds 3
 
     # Compare results
-    python poc_experiment.py --compare --scenario settings_developer_usb_debug
+    python poc_experiment.py --compare --scenario settings_change_font_size
 
     # List saved results
     python poc_experiment.py --list
@@ -119,35 +119,6 @@ SCENARIOS = {
     # Wrapper 효과: State Transition Check, Prompt Wrapper
     # 난이도: ★★★  — 깊은 메뉴, 스크롤 필요, 탭 전환
     # ══════════════════════════════════════════════════════════════════
-
-    "settings_developer_usb_debug": {
-        "description": "Navigate deeply nested settings: enable USB debugging",
-        "app_package": "com.android.settings",
-        "task": (
-            "Go to Settings → System → Developer options → "
-            "find 'USB debugging' and enable it. "
-            "You may need to scroll down to find Developer options."
-        ),
-        "success_keywords": ["USB debugging", "Developer options", "enabled"],
-        "expected_steps": 6,
-        "wrapper_targets": ["state_transition"],
-        "error_classes": {
-            "loop_stuck": {
-                "description": "Stuck scrolling/tapping same screen without reaching target",
-                "log_patterns": ["StateTransition FAIL", "[BLOCKED]",
-                                 "same screen", "repeat"],
-            },
-            "wrong_menu": {
-                "description": "Opened wrong submenu (e.g., About Phone instead of System)",
-                "log_patterns": [],
-            },
-            "premature_finish": {
-                "description": "FINISH before USB debugging was actually toggled",
-                "log_patterns": ["FINISH"],
-                "context_patterns": ["Developer", "System"],
-            },
-        },
-    },
 
     "settings_change_font_size": {
         "description": "Navigate to accessibility and change display font size",
@@ -1377,7 +1348,7 @@ def main():
         print("  python poc_experiment.py --scenarios              # 시나리오 목록")
         print("  python poc_experiment.py --run-all --rounds 3     # 전체 실행 + 비교 리포트")
         print("  python poc_experiment.py --run-all --rounds 3 --filter settings,coupang")
-        print("  python poc_experiment.py --scenario settings_developer_usb_debug --mode control --rounds 3")
+        print("  python poc_experiment.py --scenario settings_change_font_size --mode control --rounds 3")
 
 
 if __name__ == "__main__":

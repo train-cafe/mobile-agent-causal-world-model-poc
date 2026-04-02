@@ -23,7 +23,6 @@ AppAgent에 Pearl's Causality Ladder Level 2 (Intervention) 추론 + 액션 검�
 - [AppAgent 실행](#appagent-실행)
 - [PoC 실험](#poc-실험)
 - [CausalWrapper 설명](#causalwrapper-설명)
-- [트러블슈팅](#트러블슈팅)
 - [파일 구조](#파일-구조)
 
 ---
@@ -210,18 +209,9 @@ python test_appagent_integration.py
 에뮬레이터와 **동시에** 또는 **대신** 실제 Galaxy 기기를 사용할 수 있습니다.
 
 ```bash
-# 방법 1: USB 연결 (가장 간단)
-# Galaxy에서: 설정 → 개발자 옵션 → USB 디버깅 ON
-# USB 케이블로 PC에 연결 → "USB 디버깅 허용" 팝업 → 허용
-bash scripts/local/connect_device.sh
-
-# 방법 2: 무선 디버깅 (Android 11+ / One UI 3+)
+# 무선 디버깅 (Android 11+ / One UI 3+)
 # Galaxy에서: 설정 → 개발자 옵션 → 무선 디버깅 ON
 bash scripts/local/connect_device.sh --wifi
-
-# 방법 3: TCP (USB 연결 후 무선 전환)
-adb tcpip 5555                   # USB 연결 상태에서
-DEVICE_IP=192.168.1.100 bash scripts/local/connect_device.sh --tcp
 ```
 
 ### 기기 선택 (에뮬레이터 + 실제 기기 동시 사용)
@@ -276,15 +266,17 @@ Please enter the description of the task...
 # Wrapper OFF (순수 AppAgent)
 export CAUSAL_MODE=false
 export WRAPPER_ENABLED=false
+export VLM_CRITIC_ENABLED=false
 python run.py --app com.android.settings
 
-# Wrapper ON (기본값으로 복원)
+# Wrapper ON + VLM Critic ON
 export CAUSAL_MODE=true
 export WRAPPER_ENABLED=true
+export VLM_CRITIC_ENABLED=true
 python run.py --app com.android.settings
 
 # 또는 한 줄로 (export 없이)
-CAUSAL_MODE=false WRAPPER_ENABLED=false python run.py --app com.android.settings
+CAUSAL_MODE=false WRAPPER_ENABLED=false VLM_CRITIC_ENABLED=false python run.py --app com.android.settings
 ```
 
 ### 비대화형 실행 (파이프)
@@ -300,15 +292,15 @@ printf 'y\n설정에서 WiFi 메뉴로 이동해줘\n' | python run.py --app com
 
 ```bash
 # 방법 1: export 후 파이프 (권장)
-export CAUSAL_MODE=false WRAPPER_ENABLED=false
+export CAUSAL_MODE=false WRAPPER_ENABLED=false VLM_CRITIC_ENABLED=false
 printf 'y\n구글 지도에서 강남역 검색해줘\n' | python run.py --app com.google.android.apps.maps
 
 # 방법 2: subshell에서 export
-(export CAUSAL_MODE=false WRAPPER_ENABLED=false; \
+(export CAUSAL_MODE=false WRAPPER_ENABLED=false VLM_CRITIC_ENABLED=false; \
  printf 'y\n구글 지도에서 강남역 검색해줘\n' | python run.py --app com.google.android.apps.maps)
 
-# 다시 ON으로 되돌리기
-export CAUSAL_MODE=true WRAPPER_ENABLED=true
+# 다시 ON으로 되돌리기 (VLM Critic 포함)
+export CAUSAL_MODE=true WRAPPER_ENABLED=true VLM_CRITIC_ENABLED=true
 ```
 
 ### Wrapper ON/OFF 정리
@@ -317,7 +309,8 @@ export CAUSAL_MODE=true WRAPPER_ENABLED=true
 |-----------|-----------|-----|
 | **프롬프트 래퍼** | `export CAUSAL_MODE=true` | `export CAUSAL_MODE=false` |
 | **액션 래퍼** | `export WRAPPER_ENABLED=true` | `export WRAPPER_ENABLED=false` |
-| **모두 OFF** | — | `export CAUSAL_MODE=false WRAPPER_ENABLED=false` |
+| **VLM Critic (액션 검증 방식)** | `export VLM_CRITIC_ENABLED=true` | `export VLM_CRITIC_ENABLED=false` |
+| **모두 OFF** | — | `export CAUSAL_MODE=false WRAPPER_ENABLED=false VLM_CRITIC_ENABLED=false` |
 
 **우선순위**: 환경변수 > config.yaml. 환경변수 미설정 시 config.yaml 값을 사용합니다.
 
@@ -325,12 +318,14 @@ config.yaml에서도 기본값 변경 가능:
 ```yaml
 CAUSAL_MODE: False       # 프롬프트 래퍼 기본 OFF
 WRAPPER_ENABLED: False   # 액션 래퍼 기본 OFF
+VLM_CRITIC_ENABLED: True # 액션 검증을 VLM Critic으로 수행
 ```
 
 실행 시 콘솔에 현재 설정이 표시됩니다:
 ```
 [Causal] CAUSAL_MODE=False (env='false')
 [Causal] WRAPPER_ENABLED=False (env='false')
+[Causal] VLM_CRITIC_ENABLED=False (env='false')
 ```
 
 ---
@@ -356,13 +351,13 @@ python poc_experiment.py --run-all --rounds 3
 python poc_experiment.py --run-all --rounds 3 --filter settings,coupang
 
 # ── 방법 B: 개별 시나리오 실행 ──
-export CAUSAL_MODE=false WRAPPER_ENABLED=false
-python poc_experiment.py --scenario settings_developer_usb_debug --mode control --rounds 3
+export CAUSAL_MODE=false WRAPPER_ENABLED=false VLM_CRITIC_ENABLED=false
+python poc_experiment.py --scenario settings_change_font_size --mode control --rounds 3
 
-export CAUSAL_MODE=true WRAPPER_ENABLED=true
-python poc_experiment.py --scenario settings_developer_usb_debug --mode treatment --rounds 3
+export CAUSAL_MODE=true WRAPPER_ENABLED=true VLM_CRITIC_ENABLED=true
+python poc_experiment.py --scenario settings_change_font_size --mode treatment --rounds 3
 
-python poc_experiment.py --compare --scenario settings_developer_usb_debug
+python poc_experiment.py --compare --scenario settings_change_font_size
 
 # 저장된 결과 목록
 python poc_experiment.py --list
@@ -389,7 +384,6 @@ python poc_experiment.py --list
 
 | 시나리오 | 앱 | Wrapper 핵심 | 태스크 |
 |---|---|---|---|
-| `settings_developer_usb_debug` | Settings | StateTransition | 설정 → 시스템 → 개발자옵션 → USB 디버깅 (스크롤 필요) |
 | `settings_change_font_size` | Settings | StateTransition | 접근성 → 글꼴 크기 슬라이더 최대 |
 | `maps_multistep_directions` | Maps | StateTransition + Precondition | 장소검색 → 경로 → 대중교통 → 도보로 전환 |
 
@@ -416,7 +410,7 @@ python poc_experiment.py --list
 | `buy_instead_of_cart` | "담기"가 목표인데 "바로구매" 클릭 | **Irreversible Guard** | coupang_cart, coupang_price |
 | `missing_option` | 사이즈/날짜 미선택 후 다음 단계 시도 | **Precondition Check** | coupang_cart, myrealtrip, clock_alarm |
 | `premature_finish_popup` | "장바구니에 담겼습니다" 팝업에서 FINISH | **Prompt Wrapper** | coupang_cart, cgv |
-| `loop_stuck` | 스크롤/탭전환 반복하며 목표 못 찾음 | **State Transition** | settings_dev, maps_multi, chrome_tab |
+| `loop_stuck` | 스크롤/탭전환 반복하며 목표 못 찾음 | **State Transition** | settings_font, maps_multi, chrome_tab |
 | `invalid_element` | VLM이 없는 UI 번호 출력 | **elem_list 범위 검증** | 전체 (복잡한 UI일수록 빈번) |
 | `accidental_booking` | "확인만" 태스크인데 예매/결제 진입 | **Irreversible Guard** | cgv, coupang_price |
 
@@ -473,7 +467,8 @@ CausalWrapper는 두 개의 모듈로 구성됩니다:
 
 ### Action Verifier 3단계
 
-VLM이 제안한 행동을 실행 전에 순서대로 검증합니다. 하나라도 실패하면 행동을 차단하고 다음 라운드로 넘어갑니다.
+현재 구현은 `VLMCritic`이 **스크린샷 + 좌표 + 태스크 목표 + 최근 히스토리**를 보고,
+단 **1회 VLM 호출**로 아래 3단계를 동시에 판단합니다. 하나라도 실패하면 행동을 차단하고 다음 라운드로 넘어갑니다.
 
 #### Step 1. Precondition Check (사전조건 검증)
 
@@ -481,12 +476,10 @@ VLM이 제안한 행동을 실행 전에 순서대로 검증합니다. 하나라
 
 **왜 필요한가**: VLM은 "장바구니 담기" 버튼이 보이면 바로 누르려 합니다. 하지만 사이즈/색상 같은 필수 옵션을 선택하지 않으면 오류 팝업이 뜨고, 에이전트는 이를 복구하지 못해 태스크가 실패합니다.
 
-**검증 규칙**:
-| 규칙 | 감지 조건 | 차단 사유 |
-|---|---|---|
-| 로딩 상태 | "로딩", "loading", "처리 중" 키워드 | 화면 전환 미완료 — 대기 필요 |
-| 상품 페이지 미경유 | "담기" 시도인데 히스토리에 상품 상세 없음 | 상품 선택 → 옵션 → 담기 순서 위반 |
-| 필수 옵션 미선택 | "옵션을 선택", "필수 선택" 키워드 | 옵션 먼저 선택 필요 |
+**판단 예시**:
+- 옵션/사이즈 선택이 필요한 UI인데 아직 미선택이면 차단
+- 로딩/전환 중으로 보이면 차단
+- 액션 좌표가 잘못된 영역(빈 공간/오버레이)로 보이면 차단
 
 **효과**: 쿠팡에서 사이즈 미선택 후 담기 시도 → 차단 → VLM이 다음 라운드에서 사이즈 선택으로 방향 수정.
 
@@ -496,12 +489,9 @@ VLM이 제안한 행동을 실행 전에 순서대로 검증합니다. 하나라
 
 **왜 필요한가**: VLM은 "이 버튼을 눌러야 한다"고 판단하면, 실제로 클릭이 안 먹혀도 같은 행동을 계속 반복합니다. 특히 스크롤이 필요한 화면에서 보이지 않는 요소를 계속 탭하거나, 애니메이션 중에 탭해서 무시되는 경우가 빈번합니다.
 
-**검증 규칙**:
-| 규칙 | 감지 조건 | 차단 사유 |
-|---|---|---|
-| 화면 미변경 | 직전 행동의 summary와 현재 summary가 Jaccard 유사도 > 0.7 | 행동 미작동 — 다른 접근 필요 |
-| 3회 연속 반복 | 같은 화면에서 3회 연속 유사 행동 | 무한 루프 — 다른 전략 필요 |
-| 뒤로가기 실패 | "뒤로가기" 행동 후 화면 동일 | 네비게이션 실패 |
+**판단 예시**:
+- 같은 화면에서 같은 좌표/행동을 반복하며 진전이 없다고 판단되면 차단
+- 직전 시도와 비교했을 때 “새로운 정보/진행”이 없으면 차단
 
 **효과**: 설정 앱에서 "개발자 옵션"을 찾으려고 같은 메뉴를 반복 탭 → 2회 차단 → VLM이 스크롤로 전략 변경.
 
@@ -511,219 +501,47 @@ VLM이 제안한 행동을 실행 전에 순서대로 검증합니다. 하나라
 
 **왜 필요한가**: VLM은 "바로구매"와 "장바구니 담기"의 차이를 이해하지만, UI에서 두 버튼이 나란히 있을 때 잘못된 버튼을 누르는 경우가 있습니다. 특히 "가격만 확인"이 목표인데 "구매하기"를 누르면 돌이킬 수 없습니다.
 
-**검증 규칙**:
-| 감지 키워드 | 허용 조건 | 예시 |
-|---|---|---|
-| 결제/구매/주문 | task_goal에 "결제", "구매", "주문" 포함 시만 허용 | "가격 확인" 태스크에서 "바로구매" → 차단 |
-| 삭제/비우기 | task_goal에 "삭제", "비우기" 포함 시만 허용 | "장바구니 확인" 태스크에서 "전체삭제" → 차단 |
-| 취소 | task_goal에 "취소" 포함 시만 허용 | "상품 담기" 태스크에서 "주문취소" → 차단 |
+**판단 예시**:
+- 좌표가 “Buy now / 결제 / 삭제 / 취소”처럼 되돌릴 수 없는 동작을 트리거하는 버튼에 놓여 있고,
+  그 동작이 태스크 목표와 불일치하면 차단
+- 화면에 위험 버튼이 **보이기만** 해도 차단하지 않음 (좌표 기반)
 
 **효과**: CGV에서 "상영시간 확인만" 태스크인데 "예매하기" 클릭 → 차단 → 실제 결제 방지.
 
-### 왜 Rule-Based로 먼저 구현했는가
+### Action Verifier: VLM Critic (현재)
 
-| 고려사항 | Rule-Based (현재) | VLM Critic (향후) |
-|---|---|---|
-| **구현 속도** | 즉시 (키워드 매칭) | 프롬프트 설계 + 평가 필요 |
-| **추론 비용** | 0 (문자열 비교) | VLM 호출 1회 추가 (비용 2배) |
-| **지연 시간** | < 1ms | 2~5초 (VLM 응답 대기) |
-| **재현성** | 100% (같은 입력 → 같은 결과) | VLM 응답에 따라 달라짐 |
-| **디버깅** | 규칙이 명확하여 쉬움 | VLM 판단 근거 해석 필요 |
-| **정확도** | 키워드 기반이라 한계 있음 | 맥락 이해 가능하여 높음 |
+Action Verifier는 **스위치 가능한 구조**입니다.
 
-**PoC 단계에서 Rule-Based가 적합한 이유:**
-1. **실험 변수 통제**: Wrapper 효과를 측정하려면 Wrapper 자체가 결정론적(deterministic)이어야 함. VLM Critic은 호출마다 결과가 달라질 수 있어 실험 재현성이 떨어짐.
-2. **비용/속도**: 매 행동마다 VLM을 한번 더 호출하면 비용과 시간이 2배. PoC에서는 빠른 반복이 중요.
-3. **검증 가능성**: Rule이 실패하면 "어떤 키워드가 매칭됐는지"가 명확. VLM이 실패하면 "왜 이렇게 판단했는지" 추적이 어려움.
+- `VLM_CRITIC_ENABLED=true`: VLM Critic 경로 사용
+- `VLM_CRITIC_ENABLED=false`: 기존 Rule-based checker 경로 사용
 
-### VLM Critic으로 교체하면 뭐가 달라지는가
+VLM Critic 경로에서는 **동일 VLM(UI-TARS) 인스턴스**에 스크린샷 + 제안 액션(좌표) + 태스크 목표 + 최근 히스토리를 함께 주고,
+단 **1회 호출**로 아래 3가지를 동시에 판단합니다:
 
-Rule-Based는 키워드 매칭이라 **다음 상황에서 한계**가 있습니다:
+1. **PRECONDITION**: 화면이 해당 행동을 할 준비가 되었는가? (옵션 선택/로딩 완료 등)
+2. **REPETITION**: 같은 행동을 진전 없이 반복(루프)하고 있는가?
+3. **SAFETY**: (구매/삭제/취소 등) 비가역 행동이 태스크 목표와 불일치하는가?
 
-```
-예: "이 상품의 리뷰를 확인해줘" 태스크
+핵심은 “금지어가 화면에 보인다”가 아니라 **좌표가 실제로 무엇을 클릭하는지**를 기준으로 판단한다는 점입니다.
+예: 화면에 `Buy now`가 보여도 클릭 좌표가 `Add to Cart`에 있으면 **허용**.
 
-Rule-Based:
-  VLM이 "구매하기" 버튼 클릭 제안
-  → Irreversible Guard: "구매" 키워드 감지, task_goal에 "구매" 없음 → 차단 ✓
-
-  VLM이 "상품 비교하기" 버튼 클릭 제안 (리뷰 탭이 아님)
-  → 3단계 모두 통과 (위험 키워드 없음) → 허용 ✗ (잘못된 방향이지만 감지 불가)
-
-VLM Critic:
-  "상품 비교하기"가 "리뷰 확인" 태스크에 도움이 되는가?
-  → VLM이 맥락을 이해하여 "리뷰 탭을 눌러야 한다"고 판단 → 차단 ✓
-```
-
-| 상황 | Rule-Based | VLM Critic |
-|---|---|---|
-| 위험 키워드가 명확한 행동 (구매, 삭제) | 잡음 | 잡음 |
-| 위험하지 않지만 방향이 틀린 행동 | **못 잡음** | 잡음 |
-| 새로운 앱/UI에서 예상 못한 패턴 | **못 잡음** | 맥락으로 판단 가능 |
-| 한국어/영어 혼합 키워드 | 목록에 있어야 감지 | 자연어 이해로 감지 |
-
-### 교체 방법
-
-ABC 인터페이스로 분리되어 있어 구현체만 교체하면 됩니다:
-
-```python
-from abc import ABC, abstractmethod
-
-# 인터페이스 (변경 없음)
-class BasePreconditionChecker(ABC):
-    @abstractmethod
-    def check(self, action, context) -> (str, str):
-        """Returns (result, reason). result: 'pass' | 'fail' | 'skip'"""
-
-# Rule-Based 구현 (현재)
-class RulePreconditionChecker(BasePreconditionChecker):
-    def check(self, action, context):
-        # 키워드 매칭으로 검증
-        ...
-
-# VLM Critic 구현 (향후)
-class VLMPreconditionChecker(BasePreconditionChecker):
-    def __init__(self, mllm):
-        self.mllm = mllm  # VLM 모델 인스턴스
-
-    def check(self, action, context):
-        prompt = f"""
-        Task: {context['task_goal']}
-        Proposed action: {action.act_name} - {action.summary}
-        History: {context['step_history']}
-        
-        Is this action's precondition satisfied? Answer: pass or fail with reason.
-        """
-        screenshot = context['screenshot_path']
-        status, response = self.mllm.get_model_response(prompt, [screenshot])
-        # VLM 응답 파싱 → (result, reason)
-        ...
-
-# 교체: 한 줄만 변경
-wrapper = CausalWrapper(
-    task_goal,
-    precondition_checker=VLMPreconditionChecker(mllm),      # ← 여기만 변경
-    state_transition_checker=RuleStateTransitionChecker(),    # 혼합 가능
-    irreversible_guard=RuleIrreversibleGuard(),
-)
-```
-
-교체 대상 3개 클래스:
-- `RulePreconditionChecker` → `VLMPreconditionChecker`
-- `RuleStateTransitionChecker` → `VLMStateTransitionChecker`
-- `RuleIrreversibleGuard` → `VLMIrreversibleGuard`
-
-Rule과 VLM을 **혼합**하는 것도 가능합니다. 예: 비가역 방어는 Rule로 확실히 잡고, 사전조건은 VLM으로 맥락 판단.
-
----
-
-## 트러블슈팅
-
-### 에뮬레이터 성능 최적화 (버벅거림/느림/앱 크래시)
-
-Google Play 이미지는 백그라운드 서비스가 많아 무겁습니다:
+#### 활성화 방법
 
 ```bash
-# 1. AVD RAM 늘리기 (4GB → 8GB)
-#    Android Studio → Device Manager → 해당 AVD 연필(Edit) → Show Advanced
-#    → RAM: 8192 MB
+# 액션 래퍼 ON
+export WRAPPER_ENABLED=true
 
-# 2. GPU 가속 확인 (host GPU 사용)
-emulator -avd Pixel_6_Play -gpu host &
+# 액션 검증을 VLM Critic으로 전환
+export VLM_CRITIC_ENABLED=true
 
-# 3. 불필요한 Google 서비스 비활성화 (에뮬 안에서)
-adb shell pm disable-user --user 0 com.google.android.gms.policy_sidecar_ota
-adb shell pm disable-user --user 0 com.google.android.apps.wellbeing
-adb shell pm disable-user --user 0 com.google.android.apps.safetyhub
-
-# 4. 애니메이션 끄기 (속도 향상)
-adb shell settings put global window_animation_scale 0
-adb shell settings put global transition_animation_scale 0
-adb shell settings put global animator_duration_scale 0
-
-# 5. 해상도 낮추기 (선택)
-adb shell wm size 720x1600    # 원래: 1080x2400
-adb shell wm size reset       # 복원
+# (선택) 기존 Rule-based checker로 복귀
+# export VLM_CRITIC_ENABLED=false
 ```
 
-### uiautomator dump 실패 (XML 파일 없음)
+#### 코드 위치
 
-```
-adb: error: failed to stat remote object '/sdcard/...xml': No such file or directory
-```
-
-화면 전환 중 `uiautomator dump`가 실패하는 경우입니다.
-패치 적용 시 자동 재시도(3회, 3초 간격)가 동작합니다:
-```bash
-SERVER_IP="127.0.0.1" bash 07_local_setup.sh   # 패치 재적용
-```
-
-### 에뮬레이터가 안 열림 / 창을 닫은 후 재시작
-
-```bash
-# AVD 목록 확인
-emulator -list-avds
-
-# cold boot (캐시 없이 재시작)
-emulator -avd <AVD이름> -no-snapshot-load &
-
-# 그래도 안 되면: 기존 lock 파일 삭제
-rm -f ~/.android/avd/<AVD이름>.avd/*.lock
-emulator -avd <AVD이름> &
-```
-
-### 에뮬레이터에서 swipe가 홈으로 나감
-
-```bash
-# 3버튼 네비게이션 활성화 (제스처 네비 비활성화)
-adb shell cmd overlay enable com.android.internal.systemui.navbar.threebutton
-```
-
-### ADB 한글 입력 실패 (NullPointerException)
-
-```bash
-# ADBKeyboard 설치 필요
-adb install ADBKeyboard.apk
-adb shell ime set com.android.adbkeyboard/.AdbIME
-```
-
-### SSH 터널 끊김
-
-```bash
-# 터널 재연결
-ssh -i mlp-n8.pem -p 3307 -L 8080:10.11.245.167:8080 kang9.lee@jumping-host.n8.sr-cloud.com -N &
-
-# 연결 확인
-curl -s http://127.0.0.1:8080/health && echo "OK"
-```
-
-### vLLM 서버 미응답
-
-```bash
-# 서버에서 확인
-bash scripts/server/verify_vllm.sh
-
-# 재시작
-bash 05_setup_vllm.sh
-
-# 로그 확인
-tail -40 ~/.vllm/logs/vllm-server.log
-```
-
-### IndexError: list index out of range
-
-VLM이 존재하지 않는 UI 요소 번호를 출력한 경우. `WRAPPER_ENABLED=true`이면 자동 스킵됩니다.
-패치 미적용 시:
-```bash
-SERVER_IP="127.0.0.1" bash 07_local_setup.sh
-```
-
-### vLLM 429 Too Many Requests (HuggingFace)
-
-```bash
-export HF_TOKEN="hf_xxxx"
-bash 05_setup_vllm.sh
-```
+- `causal_action_wrapper.py`: `VLMCritic` (3개 검증을 1회 호출로 수행)
+- `coordinate_executor.py`: `VLM_CRITIC_ENABLED`가 켜지면 `CausalWrapper`에 `VLMCritic`을 주입
 
 ---
 

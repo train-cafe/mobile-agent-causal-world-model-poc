@@ -18,17 +18,192 @@ import re
 import subprocess as _subprocess
 import sys
 import time
+from typing import Optional
 
-from config import load_config
-from and_controller import list_all_devices, AndroidController
-from model import OpenAIModel, QwenModel
-from utils import print_with_color
+def _maybe_add_appagent_to_syspath() -> None:
+    """
+    AppAgent 원본 모듈(and_controller/model/utils/config 등)이 이 레포에 없을 수 있어,
+    기본 경로(~/AppAgent/scripts)를 sys.path에 추가한다.
+    """
+    candidates: list[str] = []
+    env_dir = os.environ.get("APPAGENT_DIR", "").strip()
+    if env_dir:
+        candidates.append(env_dir)
+    # 흔한 기본 설치 위치들
+    candidates.extend(
+        [
+            os.path.expanduser("~/AppAgent"),
+            "/home/kang9lee/AppAgent",
+        ]
+    )
+
+    for base in candidates:
+        if not base or not os.path.isdir(base):
+            continue
+        scripts_dir = os.path.join(base, "scripts")
+        if os.path.isdir(scripts_dir) and scripts_dir not in sys.path:
+            sys.path.insert(0, scripts_dir)
+        if base not in sys.path:
+            sys.path.insert(0, base)
+
+
+def _maybe_chdir_for_appagent_import() -> Optional[str]:
+    """
+    AppAgent의 `scripts/and_controller.py`는 import 시점에 `load_config()`를 호출하며,
+    기본값으로 `./config.yaml`(cwd 기준)을 찾는다.
+
+    현재 레포 루트에 config.yaml이 없으면, AppAgent 루트로 잠깐 chdir해서
+    import-time config 로딩이 성공하도록 한다.
+    """
+    if os.path.exists(os.path.join(os.getcwd(), "config.yaml")):
+        return None
+
+    candidates: list[str] = []
+    env_dir = os.environ.get("APPAGENT_DIR", "").strip()
+    if env_dir:
+        candidates.append(env_dir)
+    candidates.extend(
+        [
+            os.path.expanduser("~/AppAgent"),
+            "/home/kang9lee/AppAgent",
+        ]
+    )
+
+    for base in candidates:
+        if not base or not os.path.isdir(base):
+            continue
+        if os.path.exists(os.path.join(base, "config.yaml")):
+            old = os.getcwd()
+            os.chdir(base)
+            return old
+    return None
+
+
+_maybe_add_appagent_to_syspath()
+
 
 try:
-    from causal_action_wrapper import CausalWrapper, ProposedAction, is_wrapper_enabled
+    _old_cwd = _maybe_chdir_for_appagent_import()
+    from and_controller import list_all_devices, AndroidController
+    from model import OpenAIModel, QwenModel
+    from utils import print_with_color
+    if _old_cwd:
+        os.chdir(_old_cwd)
+except ModuleNotFoundError as e:
+    raise ModuleNotFoundError(
+        f"{e}. AppAgent 모듈이 필요합니다. "
+        "환경변수 APPAGENT_DIR을 AppAgent 경로로 설정하거나 "
+        "'~/AppAgent/scripts'가 존재하는지 확인하세요."
+    )
+
+try:
+    from causal_action_wrapper import (
+        CausalWrapper,
+        ProposedAction,
+        VLMCritic,
+        is_wrapper_enabled,
+    )
     HAS_CAUSAL = True
 except ImportError:
     HAS_CAUSAL = False
+
+
+# ─── Config loader (standalone-friendly) ─────────────────────────────────────
+#
+# 이 레포는 setup 스크립트에서 `config.yaml`을 생성하는 것을 전제로 하지만,
+# 어떤 환경에서는 외부 패키지 `config`가 먼저 import되어 충돌이 발생할 수 있다.
+# 그래서 다음 우선순위로 설정을 로딩한다:
+# 1) 사용자가 제공한 `config.load_config` (정상일 때)
+# 2) 현재 작업 디렉토리의 `config.yaml` (있으면)
+# 3) 환경변수 기반 기본값
+
+def _load_config_fallback() -> dict:
+    # setup 스크립트에서 사용한 키들 기준
+    cfg = {
+        "MODEL": os.environ.get("MODEL_BACKEND", os.environ.get("MODEL", "OpenAI")),
+        "OPENAI_API_BASE": os.environ.get(
+            "OPENAI_API_BASE",
+            os.environ.get("APPAGENT_API_BASE", "http://127.0.0.1:8080/v1/chat/completions"),
+        ),
+        "OPENAI_API_KEY": os.environ.get("OPENAI_API_KEY", "sk-unused"),
+        "OPENAI_API_MODEL": os.environ.get("OPENAI_API_MODEL", os.environ.get("MODEL_ID", "bytedance-research/UI-TARS-72B-SFT")),
+        "TEMPERATURE": float(os.environ.get("TEMPERATURE", "0.2")),
+        "MAX_TOKENS": int(os.environ.get("MAX_TOKENS", "1024")),
+        "MAX_ROUNDS": int(os.environ.get("MAX_ROUNDS", "20")),
+        "REQUEST_INTERVAL": int(os.environ.get("REQUEST_INTERVAL", "3")),
+        "WRAPPER_ENABLED": os.environ.get("WRAPPER_ENABLED", "true").strip().lower() not in ("false", "0", "no", "off"),
+        "VLM_CRITIC_ENABLED": os.environ.get("VLM_CRITIC_ENABLED", "").strip().lower() in ("1", "true", "yes", "on"),
+        # QwenModel용
+        "DASHSCOPE_API_KEY": os.environ.get("DASHSCOPE_API_KEY", "sk-unused"),
+        "QWEN_MODEL": os.environ.get("QWEN_MODEL", "qwen-vl-max"),
+    }
+    return cfg
+
+
+def _load_config_yaml(path: str) -> Optional[dict]:
+    if not os.path.exists(path):
+        return None
+    try:
+        import yaml  # type: ignore
+    except Exception:
+        return None
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
+def _resolve_config_yaml_path() -> Optional[str]:
+    """
+    config.yaml 위치를 절대경로로 찾는다.
+    우선순위:
+    1) 현재 작업 디렉토리의 ./config.yaml
+    2) APPAGENT_DIR/config.yaml
+    3) ~/AppAgent/config.yaml 또는 /home/kang9lee/AppAgent/config.yaml
+    """
+    cwd_path = os.path.join(os.getcwd(), "config.yaml")
+    if os.path.exists(cwd_path):
+        return cwd_path
+
+    env_dir = os.environ.get("APPAGENT_DIR", "").strip()
+    if env_dir:
+        p = os.path.join(env_dir, "config.yaml")
+        if os.path.exists(p):
+            return p
+
+    for base in (os.path.expanduser("~/AppAgent"), "/home/kang9lee/AppAgent"):
+        p = os.path.join(base, "config.yaml")
+        if os.path.exists(p):
+            return p
+
+    return None
+
+
+try:
+    # 정상적인 local config 모듈이 존재하는 환경이면 사용
+    from config import load_config as _load_config  # type: ignore
+
+    def load_config() -> dict:  # noqa: F811
+        config_path = _resolve_config_yaml_path()
+        # AppAgent의 load_config는 기본이 "./config.yaml"(cwd)라서,
+        # 절대경로를 명시해 cwd에 의존하지 않도록 한다.
+        cfg = _load_config(config_path) if config_path else _load_config()
+        # None 방어
+        return cfg if isinstance(cfg, dict) else _load_config_fallback()
+
+except Exception:
+
+    def load_config() -> dict:  # type: ignore
+        # 1) config.yaml 먼저 시도 (레포 루트 실행 가정)
+        config_path = _resolve_config_yaml_path()
+        cfg = _load_config_yaml(config_path) if config_path else None
+        if cfg is not None:
+            return cfg
+        # 2) 폴백
+        return _load_config_fallback()
 
 
 # ─── 프롬프트 ────────────────────────────────────────────────────────────────
@@ -370,8 +545,26 @@ def main():
         _we = os.environ.get("WRAPPER_ENABLED", "").strip().lower()
         _wo = (_we not in ("false", "0", "no", "off") if _we
                else configs.get("WRAPPER_ENABLED", True))
-        action_wrapper = CausalWrapper(task_desc) if _wo else None
-        print(f"[Causal] Action Verifier={'ON' if _wo else 'OFF'}")
+
+        _vce = os.environ.get("VLM_CRITIC_ENABLED", "").strip().lower()
+        _vc_on = (
+            _vce in ("1", "true", "yes", "on")
+            if _vce
+            else bool(configs.get("VLM_CRITIC_ENABLED", False))
+        )
+
+        if _wo and _vc_on:
+            critic = VLMCritic(mllm)
+            action_wrapper = CausalWrapper(
+                task_desc,
+                precondition_checker=critic,
+                state_transition_checker=critic,
+                irreversible_guard=critic,
+            )
+            print("[Causal] Action Verifier=ON (VLM Critic)")
+        else:
+            action_wrapper = CausalWrapper(task_desc) if _wo else None
+            print(f"[Causal] Action Verifier={'ON' if _wo else 'OFF'}")
         print(f"[Causal] Prompt Wrapper=OFF (UI-TARS는 자체 포맷 사용)")
 
     # 시스템 프롬프트
@@ -450,19 +643,36 @@ def main():
 
         # CausalWrapper Action Verifier
         if action_wrapper is not None:
+            # VLM critic용으로 좌표는 반드시 픽셀 기준으로 채워준다.
+            critic_parsed = dict(parsed)
+            if critic_parsed.get("normalized", False):
+                critic_parsed = _to_pixels(critic_parsed, width, height)
+                critic_parsed["normalized"] = False
+
             proposed = ProposedAction(
                 act_name=parsed["action"],
-                summary=parsed.get("observation", "") or parsed.get("summary", ""),
+                summary=parsed.get("observation", "")
+                or parsed.get("summary", ""),
                 raw_response=rsp,
+                x=critic_parsed.get("x"),
+                y=critic_parsed.get("y"),
+                x1=critic_parsed.get("x1"),
+                y1=critic_parsed.get("y1"),
+                x2=critic_parsed.get("x2"),
+                y2=critic_parsed.get("y2"),
+                direction=critic_parsed.get("direction"),
+                input_text=critic_parsed.get("text"),
             )
-            decision = action_wrapper.evaluate(proposed)
+            decision = action_wrapper.evaluate(
+                proposed, screenshot_path=screenshot_path
+            )
             if not decision.approved:
                 print_with_color(f"[CausalWrapper] BLOCKED: {decision.reason}", "red")
-                action_wrapper.record_step(proposed)
+                action_wrapper.record_step(proposed, screenshot_path=screenshot_path)
                 last_act = f"[BLOCKED] {decision.reason}"
                 time.sleep(request_interval)
                 continue
-            action_wrapper.record_step(proposed)
+            action_wrapper.record_step(proposed, screenshot_path=screenshot_path)
 
         # 실행
         ret = execute_action(controller, parsed, width, height)
