@@ -65,7 +65,7 @@ if [[ -n "${MODEL_ID}" ]]; then
 else
     check_step "2/4" "GET /v1/models — 모델 확인" "fail" \
         "모델 미응답. 로딩 완료까지 대기 또는 tail -f ~/.vllm/logs/vllm-server.log"
-    MODEL_ID="ByteDance-Seed/UI-TARS-1.5-7B"   # 이후 테스트용 기본값
+    MODEL_ID="bytedance-research/UI-TARS-72B-SFT"   # 이후 테스트용 기본값
 fi
 echo ""
 
