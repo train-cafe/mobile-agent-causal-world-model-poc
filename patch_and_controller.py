@@ -227,6 +227,36 @@ def _fixed_swipe_precise(self, start, end, duration=400):
 
 __CLASS_NAME__.swipe_precise = _fixed_swipe_precise
 
+# ── 7. get_device_size 수정 — 실제 기기 Override size 대응 ──────────────
+# 실제 기기에서 `adb shell wm size` 출력:
+#   Physical size: 1440x3120
+#   Override size: 1080x2400
+# Override가 있으면 그걸 사용, 없으면 Physical 사용
+
+_original_get_device_size = __CLASS_NAME__.get_device_size
+
+def _fixed_get_device_size(self):
+    adb_command = f"adb -s {self.device} shell wm size"
+    result = execute_adb(adb_command)
+    if result == "ERROR":
+        return 0, 0
+    # Override size 우선, 없으면 Physical size
+    lines = result.strip().split("\\n")
+    size_str = ""
+    for line in reversed(lines):
+        if ":" in line and "x" in line:
+            size_str = line.split(":")[1].strip()
+            break
+    if not size_str:
+        size_str = lines[0].split(":")[1].strip() if ":" in lines[0] else lines[0].strip()
+    try:
+        w, h = size_str.split("x")
+        return int(w), int(h)
+    except Exception:
+        return 0, 0
+
+__CLASS_NAME__.get_device_size = _fixed_get_device_size
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # End of monkey-patch
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
