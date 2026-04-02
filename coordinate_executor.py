@@ -197,7 +197,49 @@ def parse_response(rsp):
                     "x2": int(m.group(3)), "y2": int(m.group(4)),
                     "normalized": False, "summary": summary_text}
 
-        print_with_color(f"ERROR: Unknown action: {act}", "red")
+        # ══════════════════════════════════════════════════════════════
+        # 범용 폴백: 알 수 없는 액션을 키워드로 자동 추론
+        # UI-TARS가 예상 못한 포맷을 출력해도 최대한 처리
+        # ══════════════════════════════════════════════════════════════
+        act_lower = act.lower().strip()
+
+        # back 계열: press_back(), go_back(), back(), navigate_back()
+        if "back" in act_lower:
+            print_with_color(f"[Fallback] '{act}' → press(back)", "yellow")
+            return {"action": "press", "key": "back", "summary": summary_text}
+
+        # home 계열: press_home(), go_home(), home()
+        if "home" in act_lower and "page" not in act_lower:
+            print_with_color(f"[Fallback] '{act}' → press(home)", "yellow")
+            return {"action": "press", "key": "home", "summary": summary_text}
+
+        # enter/submit/search 계열: press_enter(), submit(), search()
+        if any(k in act_lower for k in ("enter", "submit", "search", "confirm", "return")):
+            print_with_color(f"[Fallback] '{act}' → press(enter)", "yellow")
+            return {"action": "press", "key": "enter", "summary": summary_text}
+
+        # 좌표가 포함된 미지 액션: 숫자 2개 추출해서 click으로 처리
+        coords = re.findall(r"(\d{2,4})\s*,\s*(\d{2,4})", act)
+        if coords:
+            x, y = int(coords[0][0]), int(coords[0][1])
+            # 1000 이하면 정규화, 초과면 픽셀로 판단
+            normalized = x <= 1000 and y <= 1000
+            print_with_color(f"[Fallback] '{act}' → click({x},{y}) normalized={normalized}", "yellow")
+            return {"action": "click", "x": x, "y": y,
+                    "normalized": normalized, "summary": summary_text}
+
+        # wait/pause 계열
+        if any(k in act_lower for k in ("wait", "pause", "sleep")):
+            print_with_color(f"[Fallback] '{act}' → wait()", "yellow")
+            return {"action": "wait", "summary": summary_text}
+
+        # 완료 계열
+        if any(k in act_lower for k in ("finish", "done", "complete", "end")):
+            print_with_color(f"[Fallback] '{act}' → FINISH", "yellow")
+            return {"action": "FINISH", "summary": summary_text}
+
+        # 그래도 못 잡으면 에러 (여기까지 오면 정말 모르는 액션)
+        print_with_color(f"ERROR: Unknown action (fallback failed): {act}", "red")
         return {"action": "ERROR", "summary": summary_text, "raw": act}
 
     except Exception as e:
