@@ -25,7 +25,9 @@ from model import OpenAIModel, QwenModel
 from utils import print_with_color
 
 try:
-    from causal_action_wrapper import CausalWrapper, ProposedAction, is_wrapper_enabled
+    from causal_action_wrapper import (
+        CausalWrapper, ProposedAction, is_wrapper_enabled, make_vlm_causal_wrapper,
+    )
     HAS_CAUSAL = True
 except ImportError:
     HAS_CAUSAL = False
@@ -370,9 +372,23 @@ def main():
         _we = os.environ.get("WRAPPER_ENABLED", "").strip().lower()
         _wo = (_we not in ("false", "0", "no", "off") if _we
                else configs.get("WRAPPER_ENABLED", True))
-        action_wrapper = CausalWrapper(task_desc) if _wo else None
-        print(f"[Causal] Action Verifier={'ON' if _wo else 'OFF'}")
-        print(f"[Causal] Prompt Wrapper=OFF (UI-TARS는 자체 포맷 사용)")
+        if _wo:
+            # VLM_CRITIC_ENABLED=true 이면 VLMCritic, 아니면 Rule-based
+            _vc = os.environ.get("VLM_CRITIC_ENABLED", "").strip().lower()
+            _use_vlm = (
+                _vc not in ("false", "0", "no", "off", "")
+                if _vc
+                else configs.get("VLM_CRITIC_ENABLED", False)
+            )
+            if _use_vlm:
+                action_wrapper = make_vlm_causal_wrapper(task_desc, mllm)
+                print("[Causal] Action Verifier=ON (VLM Critic)")
+            else:
+                action_wrapper = CausalWrapper(task_desc)
+                print("[Causal] Action Verifier=ON (Rule-based)")
+        else:
+            print("[Causal] Action Verifier=OFF")
+        print("[Causal] Prompt Wrapper=OFF (UI-TARS는 자체 포맷 사용)")
 
     # 시스템 프롬프트
     system_prompt = SYSTEM_PROMPT.format(width=width, height=height)

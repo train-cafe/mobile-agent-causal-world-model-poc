@@ -20,8 +20,10 @@ rule-based 구현이며, VLM critic으로 교체할 수 있도록
 각 검증을 별도 메서드로 분리한다.
 """
 
+import json
 import os
 import logging
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Optional, Any
@@ -141,9 +143,8 @@ class RulePreconditionChecker(BasePreconditionChecker):
         # Action/Summary 부분만 검사 (Observation 제외 — 화면 설명의 키워드 오탐 방지)
         raw = action.raw_response
         action_text = ""
-        import re as _re
-        am = _re.search(r"Action:\s*(.*?)(?=\n\s*Summary:|\Z)", raw, _re.DOTALL)
-        sm = _re.search(r"Summary:\s*(.*?)$", raw, _re.MULTILINE)
+        am = re.search(r"Action:\s*(.*?)(?=\n\s*Summary:|\Z)", raw, re.DOTALL)
+        sm = re.search(r"Summary:\s*(.*?)$", raw, re.MULTILINE)
         if am:
             action_text += am.group(1).strip().lower()
         if sm:
@@ -305,9 +306,8 @@ class RuleIrreversibleGuard(BaseIrreversibleGuard):
         # 실제로 "Buy now"를 클릭하는 것은 다름.
         raw = action.raw_response
         action_text = ""
-        import re as _re
-        action_match = _re.search(r"Action:\s*(.*?)(?=\n\s*Summary:|\Z)", raw, _re.DOTALL)
-        summary_match = _re.search(r"Summary:\s*(.*?)$", raw, _re.MULTILINE)
+        action_match = re.search(r"Action:\s*(.*?)(?=\n\s*Summary:|\Z)", raw, re.DOTALL)
+        summary_match = re.search(r"Summary:\s*(.*?)$", raw, re.MULTILINE)
         if action_match:
             action_text += action_match.group(1).strip().lower()
         if summary_match:
@@ -477,3 +477,186 @@ def is_wrapper_enabled() -> bool:
     """환경변수 또는 config에서 wrapper ON/OFF 확인."""
     val = os.environ.get("WRAPPER_ENABLED", "true").strip().lower()
     return val not in ("false", "0", "no", "off")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# VLM Critic — 단일 VLM 호출로 3가지 검증 동시 수행 (방안 D)
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+class VLMCritic:
+    """
+    스크린샷 + 액션 + 컨텍스트를 VLM에 보내 3가지 안전성 검증을 한 번에 수행.
+
+    결과를 round_count 기준으로 캐시하여 같은 라운드 내 중복 호출을 방지한다.
+    VLM 호출 실패 시 모두 'pass'로 폴백 (보수적으로 실행 허용).
+    """
+
+    CRITIC_SYSTEM = (
+        "You are a mobile automation safety checker. "
+        "Analyze the screenshot and proposed action, then respond ONLY with valid JSON."
+    )
+
+    CRITIC_PROMPT = """\
+Task goal: {task_goal}
+Round: {round_count}
+Proposed action: {action_name}
+Action summary: {action_summary}
+
+Recent steps ({history_len} total):
+{history_text}
+Evaluate the proposed action and respond ONLY with this JSON (no markdown, no extra text):
+{{
+  "precondition": "pass",
+  "precondition_reason": "",
+  "state_transition": "pass",
+  "state_transition_reason": "",
+  "irreversible_guard": "pass",
+  "irreversible_guard_reason": ""
+}}
+
+Definitions:
+- precondition: "fail" ONLY if the screen is clearly loading, a required option is visibly unselected, \
+or the action literally cannot be performed in the current state. Otherwise "pass".
+- state_transition: "fail" ONLY if the screen content appears identical to 3+ consecutive prior rounds \
+(stuck loop). Otherwise "pass".
+- irreversible_guard: "fail" ONLY if the action is irreversible (payment / delete / cancel-order) AND \
+the task goal does NOT require it. Otherwise "pass".
+
+Be permissive — only set "fail" when there is a CLEAR, VISIBLE problem."""
+
+    _FALLBACK: dict = {
+        "precondition": "pass", "precondition_reason": "VLM call failed — defaulting to pass",
+        "state_transition": "pass", "state_transition_reason": "",
+        "irreversible_guard": "pass", "irreversible_guard_reason": "",
+    }
+
+    def __init__(self, mllm: Any):
+        """
+        Args:
+            mllm: get_model_response(prompt, images) -> (status, response) 인터페이스를 가진 VLM 모델.
+        """
+        self.mllm = mllm
+        self._cache: dict[int, dict] = {}
+
+    def _get_result(self, action: ProposedAction, context: dict) -> dict:
+        round_count = context.get("round_count", 0)
+        if round_count in self._cache:
+            return self._cache[round_count]
+        result = self._call_vlm(action, context)
+        self._cache[round_count] = result
+        return result
+
+    def _call_vlm(self, action: ProposedAction, context: dict) -> dict:
+        """VLM 호출 후 JSON 파싱. 실패 시 폴백 dict 반환."""
+        task_goal = context.get("task_goal", "")
+        round_count = context.get("round_count", 0)
+        screenshot_path = context.get("screenshot_path", "")
+        history: list[StepRecord] = context.get("step_history", [])
+
+        # 최근 5개 스텝 요약
+        history_lines = []
+        for rec in history[-5:]:
+            if rec.action:
+                history_lines.append(
+                    f"  [{rec.round_n}] {rec.action.act_name}: {rec.action.summary[:80]}"
+                )
+        history_text = "\n".join(history_lines) if history_lines else "  (none)"
+
+        prompt = self.CRITIC_PROMPT.format(
+            task_goal=task_goal,
+            round_count=round_count,
+            action_name=action.act_name,
+            action_summary=(action.summary or "")[:200],
+            history_len=len(history),
+            history_text=history_text,
+        )
+
+        try:
+            images = (
+                [screenshot_path]
+                if screenshot_path and os.path.exists(screenshot_path)
+                else []
+            )
+            status, rsp = self.mllm.get_model_response(
+                self.CRITIC_SYSTEM + "\n\n" + prompt,
+                images,
+            )
+            if not status:
+                logger.warning(f"[VLMCritic] VLM returned error: {rsp}")
+                return self._FALLBACK.copy()
+
+            # JSON 추출: 마크다운 코드블록 → 그냥 { } → 폴백
+            json_text = rsp.strip()
+            m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", json_text, re.DOTALL)
+            if m:
+                json_text = m.group(1)
+            else:
+                m = re.search(r"\{.*\}", json_text, re.DOTALL)
+                if m:
+                    json_text = m.group(0)
+
+            parsed = json.loads(json_text)
+            logger.info(
+                f"[VLMCritic] Round {round_count}: "
+                f"pre={parsed.get('precondition', '?')} "
+                f"trans={parsed.get('state_transition', '?')} "
+                f"guard={parsed.get('irreversible_guard', '?')}"
+            )
+            return parsed
+
+        except Exception as exc:
+            logger.warning(f"[VLMCritic] Exception during VLM call: {exc}. Defaulting to pass.")
+            return self._FALLBACK.copy()
+
+
+class VLMPreconditionChecker(BasePreconditionChecker):
+    """VLMCritic 결과에서 precondition 결과를 꺼내는 어댑터."""
+
+    def __init__(self, critic: VLMCritic):
+        self.critic = critic
+
+    def check(self, action: ProposedAction, context: dict) -> tuple[str, str]:
+        r = self.critic._get_result(action, context)
+        return r.get("precondition", "pass"), r.get("precondition_reason", "")
+
+
+class VLMStateTransitionChecker(BaseStateTransitionChecker):
+    """VLMCritic 결과에서 state_transition 결과를 꺼내는 어댑터."""
+
+    def __init__(self, critic: VLMCritic):
+        self.critic = critic
+
+    def check(self, action: ProposedAction, context: dict) -> tuple[str, str]:
+        r = self.critic._get_result(action, context)
+        return r.get("state_transition", "pass"), r.get("state_transition_reason", "")
+
+
+class VLMIrreversibleGuard(BaseIrreversibleGuard):
+    """VLMCritic 결과에서 irreversible_guard 결과를 꺼내는 어댑터."""
+
+    def __init__(self, critic: VLMCritic):
+        self.critic = critic
+
+    def check(self, action: ProposedAction, context: dict) -> tuple[str, str]:
+        r = self.critic._get_result(action, context)
+        return r.get("irreversible_guard", "pass"), r.get("irreversible_guard_reason", "")
+
+
+def make_vlm_causal_wrapper(task_goal: str, mllm: Any) -> CausalWrapper:
+    """
+    VLMCritic을 사용하는 CausalWrapper 팩토리.
+
+    Args:
+        task_goal: 태스크 목표 문자열
+        mllm: get_model_response(prompt, images) -> (bool, str) 인터페이스의 VLM 모델
+
+    Returns:
+        VLMCritic 기반 CausalWrapper 인스턴스
+    """
+    critic = VLMCritic(mllm)
+    return CausalWrapper(
+        task_goal=task_goal,
+        precondition_checker=VLMPreconditionChecker(critic),
+        state_transition_checker=VLMStateTransitionChecker(critic),
+        irreversible_guard=VLMIrreversibleGuard(critic),
+    )
