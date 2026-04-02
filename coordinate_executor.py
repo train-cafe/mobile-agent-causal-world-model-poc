@@ -75,88 +75,121 @@ Given the screenshot, decide the next action."""
 # ─── 응답 파싱 ───────────────────────────────────────────────────────────────
 
 def parse_response(rsp):
-    """UI-TARS 응답 파싱."""
+    """UI-TARS 응답 파싱. 좌표는 0-1000 정규화 스케일."""
     try:
-        observation = re.findall(r"Observation:\s*(.*?)$", rsp, re.MULTILINE)
-        think = re.findall(r"Thought:\s*(.*?)$", rsp, re.MULTILINE)
-        act_match = re.findall(r"Action:\s*(.*?)$", rsp, re.MULTILINE)
+        observation = re.findall(r"Observation:\s*(.*?)(?=\n\s*Thought:|\Z)", rsp, re.DOTALL)
+        think = re.findall(r"Thought:\s*(.*?)(?=\n\s*Action:|\Z)", rsp, re.DOTALL)
+        act_match = re.findall(r"Action:\s*(.*?)(?=\n\s*Summary:|\Z)", rsp, re.DOTALL)
         summary = re.findall(r"Summary:\s*(.*?)$", rsp, re.MULTILINE)
 
-        obs_text = observation[0] if observation else ""
-        think_text = think[0] if think else ""
+        obs_text = observation[0].strip() if observation else ""
+        think_text = think[0].strip() if think else ""
         act = act_match[0].strip() if act_match else ""
-        summary_text = summary[0] if summary else ""
+        summary_text = summary[0].strip() if summary else ""
 
         print_with_color("Observation:", "yellow")
-        print_with_color(obs_text, "magenta")
+        print_with_color(obs_text[:200], "magenta")
         print_with_color("Thought:", "yellow")
-        print_with_color(think_text, "magenta")
+        print_with_color(think_text[:200], "magenta")
         print_with_color("Action:", "yellow")
         print_with_color(act, "magenta")
-        print_with_color("Summary:", "yellow")
-        print_with_color(summary_text, "magenta")
+        if summary_text:
+            print_with_color("Summary:", "yellow")
+            print_with_color(summary_text, "magenta")
 
         if not act:
             return {"action": "ERROR", "summary": "No action found", "raw": rsp}
 
-        # finished()
+        # finished / FINISH
         if "finished" in act.lower() or "FINISH" in act:
             return {"action": "FINISH", "summary": summary_text}
 
-        # click(x, y)
-        m = re.match(r"click\(\s*(\d+)\s*,\s*(\d+)\s*\)", act)
+        # ── UI-TARS 포맷: click(start_box='(x,y)') ──
+        m = re.search(r"click\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)", act)
         if m:
-            return {"action": "click", "x": int(m.group(1)), "y": int(m.group(2)),
-                    "summary": summary_text}
+            return {"action": "click",
+                    "x": int(m.group(1)), "y": int(m.group(2)),
+                    "normalized": True, "summary": summary_text}
 
-        # tap(x, y) — 호환
-        m = re.match(r"tap\(\s*(\d+)\s*,\s*(\d+)\s*\)", act)
+        # ── UI-TARS 포맷: type(content='text') 또는 type(text) ──
+        m = re.search(r"type\(\s*content\s*=\s*['\"](.+?)['\"]\s*\)", act)
         if m:
-            return {"action": "click", "x": int(m.group(1)), "y": int(m.group(2)),
-                    "summary": summary_text}
-
-        # long_press(x, y)
-        m = re.match(r"long_press\(\s*(\d+)\s*,\s*(\d+)\s*\)", act)
+            return {"action": "type", "text": m.group(1), "summary": summary_text}
+        m = re.search(r"type\(\s*['\"](.+?)['\"]\s*\)", act)
         if m:
-            return {"action": "long_press", "x": int(m.group(1)), "y": int(m.group(2)),
-                    "summary": summary_text}
-
-        # type(text) — 따옴표 있거나 없거나
-        m = re.match(r'type\(\s*["\']?(.*?)["\']?\s*\)$', act)
+            return {"action": "type", "text": m.group(1), "summary": summary_text}
+        # type without quotes
+        m = re.search(r"type\(\s*content\s*=\s*(.+?)\s*\)", act)
         if m:
             return {"action": "type", "text": m.group(1), "summary": summary_text}
 
-        # text("...") — 호환
-        m = re.match(r'text\(\s*["\'](.+?)["\']\s*\)', act)
+        # ── UI-TARS 포맷: long_press(start_box='(x,y)') ──
+        m = re.search(r"long_press\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)", act)
         if m:
-            return {"action": "type", "text": m.group(1), "summary": summary_text}
+            return {"action": "long_press",
+                    "x": int(m.group(1)), "y": int(m.group(2)),
+                    "normalized": True, "summary": summary_text}
 
-        # press(key)
-        m = re.match(r"press\(\s*(\w+)\s*\)", act)
+        # ── UI-TARS 포맷: scroll(start_box='(x,y)', direction='down') ──
+        m = re.search(
+            r"scroll\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*,\s*direction\s*=\s*['\"](\w+)['\"]\s*\)",
+            act)
+        if m:
+            return {"action": "scroll",
+                    "x": int(m.group(1)), "y": int(m.group(2)),
+                    "direction": m.group(3).lower(),
+                    "normalized": True, "summary": summary_text}
+
+        # ── UI-TARS 포맷: press(key='enter') / hotkey('enter') ──
+        m = re.search(r"(?:press|hotkey)\(\s*(?:key\s*=\s*)?['\"](\w+)['\"]\s*\)", act)
         if m:
             return {"action": "press", "key": m.group(1).lower(),
                     "summary": summary_text}
 
-        # enter() — 호환
+        # ── UI-TARS 포맷: drag(start_box='(x1,y1)', end_box='(x2,y2)') ──
+        m = re.search(
+            r"drag\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*,\s*end_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)",
+            act)
+        if m:
+            return {"action": "swipe",
+                    "x1": int(m.group(1)), "y1": int(m.group(2)),
+                    "x2": int(m.group(3)), "y2": int(m.group(4)),
+                    "normalized": True, "summary": summary_text}
+
+        # ── wait() ──
+        if "wait" in act.lower():
+            return {"action": "wait", "summary": summary_text}
+
+        # ── 폴백: 일반 좌표 포맷 click(x, y) ──
+        m = re.match(r"click\(\s*(\d+)\s*,\s*(\d+)\s*\)", act)
+        if m:
+            return {"action": "click",
+                    "x": int(m.group(1)), "y": int(m.group(2)),
+                    "normalized": False, "summary": summary_text}
+
+        # ── 폴백: tap(x, y) ──
+        m = re.match(r"tap\(\s*(\d+)\s*,\s*(\d+)\s*\)", act)
+        if m:
+            return {"action": "click",
+                    "x": int(m.group(1)), "y": int(m.group(2)),
+                    "normalized": False, "summary": summary_text}
+
+        # ── 폴백: text("...") ──
+        m = re.match(r'text\(\s*["\'](.+?)["\']\s*\)', act)
+        if m:
+            return {"action": "type", "text": m.group(1), "summary": summary_text}
+
+        # ── 폴백: enter() ──
         if act.strip() == "enter()":
             return {"action": "press", "key": "enter", "summary": summary_text}
 
-        # scroll(x, y, direction)
-        m = re.match(r"scroll\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\w+)\s*\)", act)
-        if m:
-            return {"action": "scroll", "x": int(m.group(1)), "y": int(m.group(2)),
-                    "direction": m.group(3).lower(), "summary": summary_text}
-
-        # swipe(x1, y1, x2, y2) — 호환
+        # ── 폴백: swipe(x1,y1,x2,y2) ──
         m = re.match(r"swipe\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)", act)
         if m:
-            return {"action": "swipe", "x1": int(m.group(1)), "y1": int(m.group(2)),
+            return {"action": "swipe",
+                    "x1": int(m.group(1)), "y1": int(m.group(2)),
                     "x2": int(m.group(3)), "y2": int(m.group(4)),
-                    "summary": summary_text}
-
-        # wait()
-        if "wait" in act.lower():
-            return {"action": "wait", "summary": summary_text}
+                    "normalized": False, "summary": summary_text}
 
         print_with_color(f"ERROR: Unknown action: {act}", "red")
         return {"action": "ERROR", "summary": summary_text, "raw": act}
@@ -168,8 +201,21 @@ def parse_response(rsp):
 
 # ─── 액션 실행 ───────────────────────────────────────────────────────────────
 
+def _to_pixels(parsed, width, height):
+    """정규화 좌표(0-1000)를 픽셀 좌표로 변환."""
+    if parsed.get("normalized", False):
+        for key in ("x", "y", "x1", "y1", "x2", "y2"):
+            if key in parsed:
+                if key.startswith("x"):
+                    parsed[key] = int(parsed[key] * width / 1000)
+                else:
+                    parsed[key] = int(parsed[key] * height / 1000)
+    return parsed
+
+
 def execute_action(controller, parsed, width, height):
-    """파싱된 액션을 ADB로 실행."""
+    """파싱된 액션을 ADB로 실행. 정규화 좌표는 픽셀로 변환."""
+    parsed = _to_pixels(parsed, width, height)
     action = parsed["action"]
 
     if action == "click":
