@@ -219,6 +219,23 @@ if [[ -f "${SWIPE_PATCH}" ]] && [[ -f "${AND_CONTROLLER}" ]]; then
     python3 "${SWIPE_PATCH}" "${AND_CONTROLLER}"
 fi
 
+# run.py 패치: coordinate_executor.py를 기본 executor로 사용
+RUN_PY="${APPAGENT_DIR}/run.py"
+if [[ -f "${RUN_PY}" ]] && [[ -f "${APPAGENT_DIR}/scripts/coordinate_executor.py" ]]; then
+    echo "   → run.py 패치: coordinate_executor.py를 기본 executor로 설정..."
+    if ! grep -q "coordinate_executor" "${RUN_PY}"; then
+        # 백업
+        if [[ ! -f "${RUN_PY}.orig" ]]; then
+            cp "${RUN_PY}" "${RUN_PY}.orig"
+        fi
+        # task_executor.py → coordinate_executor.py 로 교체
+        sed -i 's|scripts/task_executor.py|scripts/coordinate_executor.py|g' "${RUN_PY}"
+        echo "   ✅ run.py 패치 완료: coordinate_executor.py 사용"
+    else
+        echo "   ✅ run.py 이미 coordinate_executor 사용 중"
+    fi
+fi
+
 echo "================================================================"
 echo " [5/7] 에뮬레이터 네비게이션 모드 + ADBKeyboard 설정"
 echo "================================================================"
