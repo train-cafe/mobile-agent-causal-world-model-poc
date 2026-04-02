@@ -438,17 +438,19 @@ def _check_vllm() -> tuple[bool, str]:
 
 
 def _check_appagent() -> tuple[bool, str]:
-    """AppAgent 설치 + 패치 상태 확인."""
-    task_exec = APPAGENT_DIR / "scripts" / "task_executor.py"
-    if not task_exec.exists():
-        return False, f"task_executor.py 없음: {task_exec}"
-    content = task_exec.read_text(encoding="utf-8")
-    if "# [CAUSAL_PATCH]" not in content:
-        return False, "task_executor.py에 Causal 패치 미적용"
+    """AppAgent 설치 + coordinate_executor 확인."""
+    coord_exec = APPAGENT_DIR / "scripts" / "coordinate_executor.py"
+    legacy_exec = APPAGENT_DIR / "scripts" / "task_executor.py"
+    if coord_exec.exists():
+        executor = "coordinate_executor.py"
+    elif legacy_exec.exists():
+        executor = "task_executor.py (legacy)"
+    else:
+        return False, "executor 없음 — 07_local_setup.sh 실행 필요"
     config_yaml = APPAGENT_DIR / "config.yaml"
     if not config_yaml.exists():
         return False, f"config.yaml 없음: {config_yaml}"
-    return True, "AppAgent + 패치 확인됨"
+    return True, f"{executor} + config.yaml 확인됨"
 
 
 def preflight_check() -> bool:

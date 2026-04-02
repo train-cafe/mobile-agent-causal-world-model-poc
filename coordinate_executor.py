@@ -1,13 +1,10 @@
 """
-coordinate_executor.py — 좌표 직접 출력 Task Executor
+coordinate_executor.py — UI-TARS 1.5 기반 좌표 직접 출력 Task Executor
 
-Qwen3.5 (네이티브 멀티모달, GUI Agent 내장) 또는 UI-TARS 모델을 사용.
-스크린샷만으로 직접 좌표를 출력. uiautomator dump, 번호 라벨링 없이 동작.
+UI-TARS-1.5-7B 모델을 사용. 스크린샷만으로 직접 좌표를 출력.
+uiautomator dump, 번호 라벨링 없이 동작.
 
-지원 모델:
-  - bytedance-research/UI-TARS-72B-SFT (권장, UI 전용 학습)
-  - bytedance-research/UI-TARS-7B-SFT
-  - Qwen2.5-VL 계열
+모델: ByteDance-Seed/UI-TARS-1.5-7B (Qwen2-VL 기반, 7B)
 
 사용법:
   python scripts/coordinate_executor.py --app com.coupang.mobile --task "Search for Nike shoes"
@@ -34,48 +31,27 @@ except ImportError:
     HAS_CAUSAL = False
 
 
-# ─── UI-TARS 프롬프트 ────────────────────────────────────────────────────────
+# ─── UI-TARS 1.5 시스템 프롬프트 ──────────────────────────────────────────────
+# UI-TARS 1.5는 자체 학습된 프롬프트 포맷이 있음.
+# 모델이 학습한 포맷에 맞춰야 최적 성능 발휘.
+# 참고: https://github.com/bytedance/UI-TARS
+#        https://github.com/xlang-ai/OSWorld/blob/main/mm_agents/uitars_agent.py
 
-SYSTEM_PROMPT = """You are a GUI agent. You are given a task and a screenshot of a mobile phone. You need to perform actions to complete the task.
+SYSTEM_PROMPT = """You are a GUI agent. You are given a task and a screenshot of a mobile phone screen. You need to perform actions to complete the task.
 
-## Output Format
-Your output must follow this exact format:
-
-Observation: <Describe what you see on the screen>
-Thought: <Your reasoning about what to do next>
-Action: <Exactly ONE action from the list below>
-Summary: <Brief description of what you did>
-
-## Available Actions
-
-click(x, y): Click at pixel coordinates (x, y). Example: click(540, 1200)
-long_press(x, y): Long press at coordinates. Example: long_press(300, 500)
-type(text): Type text into the focused input field. Example: type(Nike Air Force 1)
-press(key): Press a key. Options: enter, back, home. Example: press(enter)
-scroll(x, y, direction): Scroll at position. direction: up, down, left, right. Example: scroll(540, 1200, down)
-wait(): Wait for the screen to load.
-finished(): Task is complete.
-
-## Important Rules
-- The screen resolution is {width}x{height} pixels.
-- Coordinates must be integers within bounds: x in [0, {width}], y in [0, {height}].
-- Click the CENTER of the target element.
-- After type() to enter text, use press(enter) on the NEXT step to submit/search.
-- Keyboard buttons (search icon, etc.) cannot be clicked. Use press(enter) instead.
-- Only output ONE action per step.
+Screen Resolution: {width}x{height}
 """
 
 TASK_PROMPT = """Task: {task_description}
 
 Previous actions: {last_act}
-
-Given the screenshot, decide the next action."""
+"""
 
 
 # ─── 응답 파싱 ───────────────────────────────────────────────────────────────
 
 def parse_response(rsp):
-    """UI-TARS 응답 파싱. 좌표는 0-1000 정규화 스케일."""
+    """UI-TARS 1.5 응답 파싱. 좌표는 0-1000 정규화 스케일."""
     try:
         observation = re.findall(r"Observation:\s*(.*?)(?=\n\s*Thought:|\Z)", rsp, re.DOTALL)
         think = re.findall(r"Thought:\s*(.*?)(?=\n\s*Action:|\Z)", rsp, re.DOTALL)
@@ -325,7 +301,7 @@ def execute_action(controller, parsed, width, height):
 # ─── 메인 ────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="UI-TARS Coordinate Task Executor")
+    parser = argparse.ArgumentParser(description="UI-TARS 1.5 Coordinate Task Executor")
     parser.add_argument("--app", required=True)
     parser.add_argument("--root_dir", default="./")
     parser.add_argument("--task", default="", help="Task description (skips prompt)")
