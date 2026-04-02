@@ -689,11 +689,17 @@ def _run_single_round(
     if new_tasks:
         task_dir = max(new_tasks, key=lambda p: p.stat().st_mtime)
         task_dir_path = str(task_dir)
+        # 디렉토리 내용 확인
+        files_in_dir = list(task_dir.iterdir()) if task_dir.exists() else []
+        png_count = len([f for f in files_in_dir if f.suffix == ".png"])
+        print(f"  Task dir: {task_dir_path} ({png_count} screenshots, {len(files_in_dir)} total files)")
         log_files = list(task_dir.glob("log_*.txt"))
         if log_files:
             log_file = log_files[0]
             appagent_log = log_file.read_text(encoding="utf-8", errors="replace")
             steps_used = sum(1 for line in appagent_log.strip().splitlines() if line.strip())
+    else:
+        print(f"  Warning: No new task directory found in {tasks_dir}")
 
     # 성공 판정
     task_complete = "task completed successfully" in stdout.lower()

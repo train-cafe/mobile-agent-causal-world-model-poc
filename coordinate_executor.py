@@ -15,6 +15,7 @@ import datetime
 import json
 import os
 import re
+import subprocess as _subprocess
 import sys
 import time
 
@@ -24,20 +25,18 @@ from model import OpenAIModel, QwenModel
 from utils import print_with_color
 
 try:
-    from causal_wrapper import CausalWorldModel
     from causal_action_wrapper import CausalWrapper, ProposedAction, is_wrapper_enabled
     HAS_CAUSAL = True
 except ImportError:
     HAS_CAUSAL = False
 
 
-# ─── UI-TARS 1.5 시스템 프롬프트 ──────────────────────────────────────────────
-# UI-TARS 1.5는 자체 학습된 프롬프트 포맷이 있음.
-# 모델이 학습한 포맷에 맞춰야 최적 성능 발휘.
-# 참고: https://github.com/bytedance/UI-TARS
-#        https://github.com/xlang-ai/OSWorld/blob/main/mm_agents/uitars_agent.py
+# ─── 프롬프트 ────────────────────────────────────────────────────────────────
+# UI-TARS 1.5는 자체 학습된 포맷이 있음. 최소한의 프롬프트만 제공.
+# 모델이 Observation/Thought를 출력할 수도 있고 안 할 수도 있음 — 강제하지 않음.
 
-SYSTEM_PROMPT = """You are a GUI agent. You are given a task and a screenshot of a mobile phone screen. You need to perform actions to complete the task.
+SYSTEM_PROMPT = """You are a GUI agent. You are given a task and a screenshot of a mobile phone screen.
+Perform actions to complete the task.
 
 Screen Resolution: {width}x{height}
 """
@@ -51,176 +50,166 @@ Previous actions: {last_act}
 # ─── 응답 파싱 ───────────────────────────────────────────────────────────────
 
 def parse_response(rsp):
-    """UI-TARS 1.5 응답 파싱. 좌표는 0-1000 정규화 스케일."""
-    try:
-        observation = re.findall(r"Observation:\s*(.*?)(?=\n\s*Thought:|\Z)", rsp, re.DOTALL)
-        think = re.findall(r"Thought:\s*(.*?)(?=\n\s*Action:|\Z)", rsp, re.DOTALL)
-        act_match = re.findall(r"Action:\s*(.*?)(?=\n\s*Summary:|\Z)", rsp, re.DOTALL)
-        summary = re.findall(r"Summary:\s*(.*?)$", rsp, re.MULTILINE)
+    """
+    UI-TARS 1.5 응답 파싱.
 
-        obs_text = observation[0].strip() if observation else ""
-        think_text = think[0].strip() if think else ""
-        act = act_match[0].strip() if act_match else ""
-        summary_text = summary[0].strip() if summary else ""
+    UI-TARS는 Observation/Thought를 출력할 수도 있고 Action만 출력할 수도 있음.
+    Action 라인만 확실히 추출하고, 나머지는 있으면 가져옴.
+    좌표는 0-1000 정규화 스케일.
+    """
+    # 전체 응답에서 구조 추출 (있으면 가져오고 없으면 빈 문자열)
+    obs_match = re.search(r"Observation:\s*(.*?)(?=\n\s*(?:Thought|Action):|\Z)", rsp, re.DOTALL)
+    think_match = re.search(r"Thought:\s*(.*?)(?=\n\s*Action:|\Z)", rsp, re.DOTALL)
+    summary_match = re.search(r"Summary:\s*(.*?)$", rsp, re.MULTILINE)
 
-        print_with_color("Observation:", "yellow")
-        print_with_color(obs_text[:200], "magenta")
-        print_with_color("Thought:", "yellow")
-        print_with_color(think_text[:200], "magenta")
-        print_with_color("Action:", "yellow")
-        print_with_color(act, "magenta")
-        if summary_text:
-            print_with_color("Summary:", "yellow")
-            print_with_color(summary_text, "magenta")
+    obs_text = obs_match.group(1).strip() if obs_match else ""
+    think_text = think_match.group(1).strip() if think_match else ""
+    summary_text = summary_match.group(1).strip() if summary_match else ""
 
-        if not act:
-            return {"action": "ERROR", "summary": "No action found", "raw": rsp}
+    # Action 추출 — "Action:" 이후 또는 응답 전체에서 액션 패턴 찾기
+    act = ""
+    act_match = re.search(r"Action:\s*(.*?)(?=\n\s*Summary:|\Z)", rsp, re.DOTALL)
+    if act_match:
+        act = act_match.group(1).strip()
 
-        # finished / FINISH
-        if "finished" in act.lower() or "FINISH" in act:
-            return {"action": "FINISH", "summary": summary_text}
+    # Action: 태그가 없으면 응답 전체에서 액션 패턴 직접 검색
+    if not act:
+        action_patterns = [
+            r"(click\(.*?\))",
+            r"(type\(.*?\))",
+            r"(press\(.*?\))",
+            r"(press_\w+\(\))",
+            r"(scroll\(.*?\))",
+            r"(drag\(.*?\))",
+            r"(long_press\(.*?\))",
+            r"(hotkey\(.*?\))",
+            r"(wait\(\))",
+            r"(finished\(\))",
+        ]
+        for pat in action_patterns:
+            m = re.search(pat, rsp)
+            if m:
+                act = m.group(1)
+                break
 
-        # ── UI-TARS 포맷: click(start_box='(x,y)') ──
-        m = re.search(r"click\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)", act)
-        if m:
-            return {"action": "click",
-                    "x": int(m.group(1)), "y": int(m.group(2)),
-                    "normalized": True, "summary": summary_text}
+    if not act:
+        return {"action": "ERROR", "summary": "No action found",
+                "raw": rsp, "observation": obs_text, "thought": think_text}
 
-        # ── UI-TARS 포맷: type(content='text') / type('text') / type(text) ──
-        # 따옴표 있는 경우
-        m = re.search(r"type\(\s*(?:content\s*=\s*)?['\"](.+?)['\"]\s*\)", act)
-        if m:
-            return {"action": "type", "text": m.group(1), "summary": summary_text}
-        # 따옴표 없는 경우: type(content=hello) / type(hello world)
-        m = re.search(r"type\(\s*(?:content\s*=\s*)?(.+?)\s*\)", act)
-        if m and m.group(1).strip():
-            return {"action": "type", "text": m.group(1).strip(), "summary": summary_text}
+    # ── 파싱 결과에 항상 observation/thought 포함 ──
+    base = {"summary": summary_text, "observation": obs_text,
+            "thought": think_text, "raw_action": act}
 
-        # ── UI-TARS 포맷: long_press(start_box='(x,y)') ──
-        m = re.search(r"long_press\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)", act)
-        if m:
-            return {"action": "long_press",
-                    "x": int(m.group(1)), "y": int(m.group(2)),
-                    "normalized": True, "summary": summary_text}
+    # finished / FINISH
+    if "finished" in act.lower() or "FINISH" in act:
+        return {**base, "action": "FINISH"}
 
-        # ── UI-TARS 포맷: scroll(start_box='(x,y)', direction='down') / scroll(direction='down') ──
-        m = re.search(
-            r"scroll\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*,\s*direction\s*=\s*['\"]?(\w+)['\"]?\s*\)",
-            act)
-        if m:
-            return {"action": "scroll",
-                    "x": int(m.group(1)), "y": int(m.group(2)),
-                    "direction": m.group(3).lower(),
-                    "normalized": True, "summary": summary_text}
+    # click(start_box='(x,y)')
+    m = re.search(r"click\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)", act)
+    if m:
+        return {**base, "action": "click", "x": int(m.group(1)), "y": int(m.group(2)),
+                "normalized": True}
 
-        # scroll without start_box: scroll(direction='down')
-        m = re.search(r"scroll\(\s*direction\s*=\s*['\"]?(\w+)['\"]?\s*\)", act)
-        if m:
-            return {"action": "scroll",
-                    "x": 500, "y": 500,
-                    "direction": m.group(1).lower(),
-                    "normalized": True, "summary": summary_text}
+    # type(content='text') / type('text') / type(text)
+    m = re.search(r"type\(\s*(?:content\s*=\s*)?['\"](.+?)['\"]\s*\)", act)
+    if m:
+        return {**base, "action": "type", "text": m.group(1)}
+    m = re.search(r"type\(\s*(?:content\s*=\s*)?(.+?)\s*\)", act)
+    if m and m.group(1).strip():
+        return {**base, "action": "type", "text": m.group(1).strip()}
 
-        # ── UI-TARS 포맷: press(key='enter') / press(enter) / hotkey('enter') ──
-        m = re.search(r"(?:press|hotkey)\(\s*(?:key\s*=\s*)?['\"]?(\w+)['\"]?\s*\)", act)
-        if m:
-            return {"action": "press", "key": m.group(1).lower(),
-                    "summary": summary_text}
+    # long_press(start_box='(x,y)')
+    m = re.search(r"long_press\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)", act)
+    if m:
+        return {**base, "action": "long_press", "x": int(m.group(1)), "y": int(m.group(2)),
+                "normalized": True}
 
-        # ── UI-TARS 포맷: drag(start_box='(x1,y1)', end_box='(x2,y2)') ──
-        m = re.search(
-            r"drag\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*,\s*end_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)",
-            act)
-        if m:
-            return {"action": "swipe",
-                    "x1": int(m.group(1)), "y1": int(m.group(2)),
-                    "x2": int(m.group(3)), "y2": int(m.group(4)),
-                    "normalized": True, "summary": summary_text}
+    # scroll(start_box='(x,y)', direction='down')
+    m = re.search(
+        r"scroll\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*,\s*direction\s*=\s*['\"]?(\w+)['\"]?\s*\)",
+        act)
+    if m:
+        return {**base, "action": "scroll", "x": int(m.group(1)), "y": int(m.group(2)),
+                "direction": m.group(3).lower(), "normalized": True}
 
-        # ── wait() ──
-        if "wait" in act.lower():
-            return {"action": "wait", "summary": summary_text}
+    # scroll(direction='down')
+    m = re.search(r"scroll\(\s*direction\s*=\s*['\"]?(\w+)['\"]?\s*\)", act)
+    if m:
+        return {**base, "action": "scroll", "x": 500, "y": 500,
+                "direction": m.group(1).lower(), "normalized": True}
 
-        # ── 폴백: 일반 좌표 포맷 click(x, y) ──
-        m = re.match(r"click\(\s*(\d+)\s*,\s*(\d+)\s*\)", act)
-        if m:
-            return {"action": "click",
-                    "x": int(m.group(1)), "y": int(m.group(2)),
-                    "normalized": False, "summary": summary_text}
+    # press(key='enter') / press(enter) / hotkey('enter')
+    m = re.search(r"(?:press|hotkey)\(\s*(?:key\s*=\s*)?['\"]?(\w+)['\"]?\s*\)", act)
+    if m:
+        return {**base, "action": "press", "key": m.group(1).lower()}
 
-        # ── 폴백: tap(x, y) ──
-        m = re.match(r"tap\(\s*(\d+)\s*,\s*(\d+)\s*\)", act)
-        if m:
-            return {"action": "click",
-                    "x": int(m.group(1)), "y": int(m.group(2)),
-                    "normalized": False, "summary": summary_text}
+    # drag(start_box='(x1,y1)', end_box='(x2,y2)')
+    m = re.search(
+        r"drag\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*,\s*end_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)",
+        act)
+    if m:
+        return {**base, "action": "swipe",
+                "x1": int(m.group(1)), "y1": int(m.group(2)),
+                "x2": int(m.group(3)), "y2": int(m.group(4)),
+                "normalized": True}
 
-        # ── 폴백: text("...") ──
-        m = re.match(r'text\(\s*["\'](.+?)["\']\s*\)', act)
-        if m:
-            return {"action": "type", "text": m.group(1), "summary": summary_text}
+    # wait()
+    if "wait" in act.lower():
+        return {**base, "action": "wait"}
 
-        # ── 폴백: enter() ──
-        if act.strip() == "enter()":
-            return {"action": "press", "key": "enter", "summary": summary_text}
+    # ── 폴백: click(x, y) / tap(x, y) ──
+    m = re.match(r"(?:click|tap)\(\s*(\d+)\s*,\s*(\d+)\s*\)", act)
+    if m:
+        return {**base, "action": "click", "x": int(m.group(1)), "y": int(m.group(2)),
+                "normalized": False}
 
-        # ── 폴백: swipe(x1,y1,x2,y2) ──
-        m = re.match(r"swipe\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)", act)
-        if m:
-            return {"action": "swipe",
-                    "x1": int(m.group(1)), "y1": int(m.group(2)),
-                    "x2": int(m.group(3)), "y2": int(m.group(4)),
-                    "normalized": False, "summary": summary_text}
+    # text("...")
+    m = re.match(r'text\(\s*["\'](.+?)["\']\s*\)', act)
+    if m:
+        return {**base, "action": "type", "text": m.group(1)}
 
-        # ══════════════════════════════════════════════════════════════
-        # 범용 폴백: 알 수 없는 액션을 키워드로 자동 추론
-        # UI-TARS가 예상 못한 포맷을 출력해도 최대한 처리
-        # ══════════════════════════════════════════════════════════════
-        act_lower = act.lower().strip()
+    # enter()
+    if act.strip() == "enter()":
+        return {**base, "action": "press", "key": "enter"}
 
-        # back 계열: press_back(), go_back(), back(), navigate_back()
-        if "back" in act_lower:
-            print_with_color(f"[Fallback] '{act}' → press(back)", "yellow")
-            return {"action": "press", "key": "back", "summary": summary_text}
+    # swipe(x1,y1,x2,y2)
+    m = re.match(r"swipe\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)", act)
+    if m:
+        return {**base, "action": "swipe",
+                "x1": int(m.group(1)), "y1": int(m.group(2)),
+                "x2": int(m.group(3)), "y2": int(m.group(4)),
+                "normalized": False}
 
-        # home 계열: press_home(), go_home(), home()
-        if "home" in act_lower and "page" not in act_lower:
-            print_with_color(f"[Fallback] '{act}' → press(home)", "yellow")
-            return {"action": "press", "key": "home", "summary": summary_text}
+    # ── 범용 폴백: 키워드 추론 ──
+    act_lower = act.lower().strip()
 
-        # enter/submit/search 계열: press_enter(), submit(), search()
-        if any(k in act_lower for k in ("enter", "submit", "search", "confirm", "return")):
-            print_with_color(f"[Fallback] '{act}' → press(enter)", "yellow")
-            return {"action": "press", "key": "enter", "summary": summary_text}
+    if "back" in act_lower:
+        print_with_color(f"[Fallback] '{act}' -> press(back)", "yellow")
+        return {**base, "action": "press", "key": "back"}
 
-        # 좌표가 포함된 미지 액션: 숫자 2개 추출해서 click으로 처리
-        coords = re.findall(r"(\d{2,4})\s*,\s*(\d{2,4})", act)
-        if coords:
-            x, y = int(coords[0][0]), int(coords[0][1])
-            # 1000 이하면 정규화, 초과면 픽셀로 판단
-            normalized = x <= 1000 and y <= 1000
-            print_with_color(f"[Fallback] '{act}' → click({x},{y}) normalized={normalized}", "yellow")
-            return {"action": "click", "x": x, "y": y,
-                    "normalized": normalized, "summary": summary_text}
+    if "home" in act_lower and "page" not in act_lower:
+        print_with_color(f"[Fallback] '{act}' -> press(home)", "yellow")
+        return {**base, "action": "press", "key": "home"}
 
-        # wait/pause 계열
-        if any(k in act_lower for k in ("wait", "pause", "sleep")):
-            print_with_color(f"[Fallback] '{act}' → wait()", "yellow")
-            return {"action": "wait", "summary": summary_text}
+    if any(k in act_lower for k in ("enter", "submit", "search", "confirm", "return")):
+        print_with_color(f"[Fallback] '{act}' -> press(enter)", "yellow")
+        return {**base, "action": "press", "key": "enter"}
 
-        # 완료 계열
-        if any(k in act_lower for k in ("finish", "done", "complete", "end")):
-            print_with_color(f"[Fallback] '{act}' → FINISH", "yellow")
-            return {"action": "FINISH", "summary": summary_text}
+    coords = re.findall(r"(\d{2,4})\s*,\s*(\d{2,4})", act)
+    if coords:
+        x, y = int(coords[0][0]), int(coords[0][1])
+        normalized = x <= 1000 and y <= 1000
+        print_with_color(f"[Fallback] '{act}' -> click({x},{y})", "yellow")
+        return {**base, "action": "click", "x": x, "y": y, "normalized": normalized}
 
-        # 그래도 못 잡으면 에러 (여기까지 오면 정말 모르는 액션)
-        print_with_color(f"ERROR: Unknown action (fallback failed): {act}", "red")
-        return {"action": "ERROR", "summary": summary_text, "raw": act}
+    if any(k in act_lower for k in ("wait", "pause", "sleep")):
+        return {**base, "action": "wait"}
 
-    except Exception as e:
-        print_with_color(f"ERROR: Parse exception: {e}", "red")
-        return {"action": "ERROR", "summary": str(e), "raw": rsp}
+    if any(k in act_lower for k in ("finish", "done", "complete", "end")):
+        return {**base, "action": "FINISH"}
+
+    print_with_color(f"ERROR: Unknown action (all fallbacks failed): {act}", "red")
+    return {**base, "action": "ERROR", "raw": rsp}
 
 
 # ─── 액션 실행 ───────────────────────────────────────────────────────────────
@@ -230,7 +219,7 @@ def _to_pixels(parsed, width, height):
     if parsed.get("normalized", False):
         for key in ("x", "y", "x1", "y1", "x2", "y2"):
             if key in parsed:
-                if key.startswith("x"):
+                if key.startswith("x") or key == "x":
                     parsed[key] = int(parsed[key] * width / 1000)
                 else:
                     parsed[key] = int(parsed[key] * height / 1000)
@@ -268,8 +257,7 @@ def execute_action(controller, parsed, width, height):
             "home": "KEYCODE_HOME",
         }
         keycode = key_map.get(key, f"KEYCODE_{key.upper()}")
-        import subprocess
-        ret = subprocess.run(
+        ret = _subprocess.run(
             ["adb", "-s", controller.device, "shell", "input", "keyevent", keycode],
             capture_output=True, text=True, timeout=5,
         )
@@ -361,21 +349,15 @@ def main():
     os.makedirs(task_dir, exist_ok=True)
     log_path = os.path.join(task_dir, f"log_{app}_{dir_name}.txt")
 
-    # CausalWrapper
-    causal_model = None
+    # CausalWrapper — Action Verifier만 사용 (Prompt Wrapper는 UI-TARS에서 무효)
     action_wrapper = None
     if HAS_CAUSAL:
-        _ce = os.environ.get("CAUSAL_MODE", "").strip().lower()
-        _co = (_ce not in ("false", "0", "no", "off") if _ce
-               else configs.get("CAUSAL_MODE", True))
-        causal_model = CausalWorldModel(task_desc) if _co else None
-        print(f"[Causal] CAUSAL_MODE={_co}")
-
         _we = os.environ.get("WRAPPER_ENABLED", "").strip().lower()
         _wo = (_we not in ("false", "0", "no", "off") if _we
                else configs.get("WRAPPER_ENABLED", True))
         action_wrapper = CausalWrapper(task_desc) if _wo else None
-        print(f"[Causal] WRAPPER_ENABLED={_wo}")
+        print(f"[Causal] Action Verifier={'ON' if _wo else 'OFF'}")
+        print(f"[Causal] Prompt Wrapper=OFF (UI-TARS는 자체 포맷 사용)")
 
     # 시스템 프롬프트
     system_prompt = SYSTEM_PROMPT.format(width=width, height=height)
@@ -389,7 +371,7 @@ def main():
 
     while round_count < max_rounds:
         round_count += 1
-        print_with_color(f"Round {round_count}", "yellow")
+        print_with_color(f"\nRound {round_count}", "yellow")
 
         time.sleep(2)  # UI 안정화
 
@@ -406,12 +388,6 @@ def main():
             task_description=task_desc,
             last_act=last_act,
         )
-
-        # Causal 래핑
-        if causal_model is not None:
-            user_prompt = causal_model.wrap_prompt(user_prompt, last_act)
-
-        # 전체 프롬프트 = 시스템 + 유저
         full_prompt = system_prompt + "\n\n" + user_prompt
 
         # VLM 호출
@@ -422,24 +398,33 @@ def main():
             print_with_color(f"VLM error: {rsp}", "red")
             break
 
-        # 로그
+        # ── VLM 응답 전체 출력 (사용자가 모델의 판단을 볼 수 있도록) ──
+        print_with_color("─── VLM Response ───", "yellow")
+        for line in rsp.strip().split("\n"):
+            print_with_color(f"  {line}", "magenta")
+        print_with_color("────────────────────", "yellow")
+
+        # 로그 (스크린샷 경로 포함)
         with open(log_path, "a") as f:
             f.write(json.dumps({
                 "step": round_count,
                 "prompt": full_prompt,
                 "image": os.path.basename(screenshot_path),
                 "response": rsp,
+                "screenshot_path": screenshot_path,
             }, ensure_ascii=False) + "\n")
 
         # 파싱
         parsed = parse_response(rsp)
 
-        # Causal 기록
-        if causal_model is not None:
-            causal_model.record_action(
-                round_count, parsed["action"], parsed.get("summary", "")
-            )
+        # 파싱 결과 요약 출력
+        if parsed.get("observation"):
+            print_with_color(f"  Obs: {parsed['observation'][:150]}", "cyan")
+        if parsed.get("thought"):
+            print_with_color(f"  Think: {parsed['thought'][:150]}", "cyan")
+        print_with_color(f"  Action: {parsed.get('raw_action', parsed['action'])}", "cyan")
 
+        # FINISH / ERROR
         if parsed["action"] == "FINISH":
             task_complete = True
             break
@@ -448,11 +433,11 @@ def main():
             time.sleep(request_interval)
             continue
 
-        # CausalWrapper 검증
+        # CausalWrapper Action Verifier
         if action_wrapper is not None:
             proposed = ProposedAction(
                 act_name=parsed["action"],
-                summary=parsed.get("summary", ""),
+                summary=parsed.get("observation", "") or parsed.get("summary", ""),
                 raw_response=rsp,
             )
             decision = action_wrapper.evaluate(proposed)
@@ -470,7 +455,8 @@ def main():
             print_with_color(f"ERROR: {parsed['action']} failed", "red")
             break
 
-        last_act = parsed.get("summary", str(parsed["action"]))
+        # last_act: observation이 있으면 사용 (summary보다 정보가 많음)
+        last_act = parsed.get("observation", "") or parsed.get("summary", "") or str(parsed["action"])
         time.sleep(request_interval)
 
     if task_complete:
