@@ -138,8 +138,17 @@ class RulePreconditionChecker(BasePreconditionChecker):
 
     def check(self, action: ProposedAction, context: dict) -> tuple[str, str]:
         summary_lower = action.summary.lower()
-        raw_lower = action.raw_response.lower()
-        combined = summary_lower + " " + raw_lower
+        # Action/Summary 부분만 검사 (Observation 제외 — 화면 설명의 키워드 오탐 방지)
+        raw = action.raw_response
+        action_text = ""
+        import re as _re
+        am = _re.search(r"Action:\s*(.*?)(?=\n\s*Summary:|\Z)", raw, _re.DOTALL)
+        sm = _re.search(r"Summary:\s*(.*?)$", raw, _re.MULTILINE)
+        if am:
+            action_text += am.group(1).strip().lower()
+        if sm:
+            action_text += " " + sm.group(1).strip().lower()
+        combined = summary_lower + " " + action_text
 
         # 히스토리에서 최근 상태 참조
         history = context.get("step_history", [])
@@ -290,8 +299,22 @@ class RuleIrreversibleGuard(BaseIrreversibleGuard):
     def check(self, action: ProposedAction, context: dict) -> tuple[str, str]:
         task_goal = context.get("task_goal", "").lower()
         summary_lower = action.summary.lower()
-        raw_lower = action.raw_response.lower()
-        combined = summary_lower + " " + raw_lower
+
+        # raw_response에서 Action/Summary 부분만 추출 (Observation은 화면 설명이므로 제외)
+        # VLM이 화면에 "Buy now" 버튼이 보인다고 설명하는 것과,
+        # 실제로 "Buy now"를 클릭하는 것은 다름.
+        raw = action.raw_response
+        action_text = ""
+        import re as _re
+        action_match = _re.search(r"Action:\s*(.*?)(?=\n\s*Summary:|\Z)", raw, _re.DOTALL)
+        summary_match = _re.search(r"Summary:\s*(.*?)$", raw, _re.MULTILINE)
+        if action_match:
+            action_text += action_match.group(1).strip().lower()
+        if summary_match:
+            action_text += " " + summary_match.group(1).strip().lower()
+
+        # 검사 대상: summary + Action/Summary 텍스트만 (Observation 제외)
+        combined = summary_lower + " " + action_text
 
         for kw in self.DANGER_KEYWORDS:
             if kw.lower() not in combined:
