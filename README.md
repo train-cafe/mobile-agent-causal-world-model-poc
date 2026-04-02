@@ -7,7 +7,7 @@ AppAgent에 Pearl's Causality Ladder Level 2 (Intervention) 추론 + 액션 검�
 │           로컬 PC                     │     │       원격 서버 (H100 x2)   │
 │                                      │     │                             │
 │  Android 에뮬레이터                   │     │  vLLM                       │
-│  (KVM 가속 + GPU 렌더링)              │     │  Qwen3.5-35B-A3B (MoE)      │
+│  (KVM 가속 + GPU 렌더링)              │     │  UI-TARS-1.5-7B      │
 │       ↕ ADB                          │ SSH │  port 8080                  │
 │  AppAgent                            │◄───►│  tensor-parallel=2          │
 │  + CausalWrapper (프롬프트 + 액션)   │tunnel│                             │
@@ -454,7 +454,7 @@ CausalWrapper는 두 개의 모듈로 구성됩니다:
     │  → 이전 행동 히스토리 제공
     │  → 비가역 행동 경고
     ↓
-    VLM 호출 (Qwen3.5-35B-A3B)
+    VLM 호출 (UI-TARS-1.5-7B)
     ↓
     응답 파싱 → proposed_action
     ↓
@@ -731,7 +731,7 @@ bash 05_setup_vllm.sh
 
 ```
 .
-├── 05_setup_vllm.sh              # [서버] vLLM + Qwen3.5-35B-A3B 서빙
+├── 05_setup_vllm.sh              # [서버] vLLM + UI-TARS-1.5-7B 서빙
 ├── 02_setup_android_sdk.sh       # [로컬] Android SDK + AVD 생성
 ├── 07_local_setup.sh             # [로컬] AppAgent + CausalWrapper 설정 (메인)
 │
@@ -768,6 +768,6 @@ bash 05_setup_vllm.sh
 
 - [AppAgent](https://github.com/mnotgod96/AppAgent)
 - [vLLM](https://docs.vllm.ai)
-- [Qwen3.5-35B-A3B](https://huggingface.co/Qwen/Qwen3.5-35B-A3B)
+- [UI-TARS-1.5-7B](https://huggingface.co/ByteDance-Seed/UI-TARS-1.5-7B)
 - [ADBKeyboard](https://github.com/nicewook/ADBKeyboard)
 - [Android Emulator CLI](https://developer.android.com/studio/run/emulator-commandline)
