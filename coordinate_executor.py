@@ -111,17 +111,15 @@ def parse_response(rsp):
                     "x": int(m.group(1)), "y": int(m.group(2)),
                     "normalized": True, "summary": summary_text}
 
-        # ── UI-TARS 포맷: type(content='text') 또는 type(text) ──
-        m = re.search(r"type\(\s*content\s*=\s*['\"](.+?)['\"]\s*\)", act)
+        # ── UI-TARS 포맷: type(content='text') / type('text') / type(text) ──
+        # 따옴표 있는 경우
+        m = re.search(r"type\(\s*(?:content\s*=\s*)?['\"](.+?)['\"]\s*\)", act)
         if m:
             return {"action": "type", "text": m.group(1), "summary": summary_text}
-        m = re.search(r"type\(\s*['\"](.+?)['\"]\s*\)", act)
-        if m:
-            return {"action": "type", "text": m.group(1), "summary": summary_text}
-        # type without quotes
-        m = re.search(r"type\(\s*content\s*=\s*(.+?)\s*\)", act)
-        if m:
-            return {"action": "type", "text": m.group(1), "summary": summary_text}
+        # 따옴표 없는 경우: type(content=hello) / type(hello world)
+        m = re.search(r"type\(\s*(?:content\s*=\s*)?(.+?)\s*\)", act)
+        if m and m.group(1).strip():
+            return {"action": "type", "text": m.group(1).strip(), "summary": summary_text}
 
         # ── UI-TARS 포맷: long_press(start_box='(x,y)') ──
         m = re.search(r"long_press\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*\)", act)
@@ -130,9 +128,9 @@ def parse_response(rsp):
                     "x": int(m.group(1)), "y": int(m.group(2)),
                     "normalized": True, "summary": summary_text}
 
-        # ── UI-TARS 포맷: scroll(start_box='(x,y)', direction='down') ──
+        # ── UI-TARS 포맷: scroll(start_box='(x,y)', direction='down') / scroll(direction='down') ──
         m = re.search(
-            r"scroll\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*,\s*direction\s*=\s*['\"](\w+)['\"]\s*\)",
+            r"scroll\(\s*start_box\s*=\s*['\"]?\((\d+)\s*,\s*(\d+)\)['\"]?\s*,\s*direction\s*=\s*['\"]?(\w+)['\"]?\s*\)",
             act)
         if m:
             return {"action": "scroll",
@@ -140,8 +138,16 @@ def parse_response(rsp):
                     "direction": m.group(3).lower(),
                     "normalized": True, "summary": summary_text}
 
-        # ── UI-TARS 포맷: press(key='enter') / hotkey('enter') ──
-        m = re.search(r"(?:press|hotkey)\(\s*(?:key\s*=\s*)?['\"](\w+)['\"]\s*\)", act)
+        # scroll without start_box: scroll(direction='down')
+        m = re.search(r"scroll\(\s*direction\s*=\s*['\"]?(\w+)['\"]?\s*\)", act)
+        if m:
+            return {"action": "scroll",
+                    "x": 500, "y": 500,
+                    "direction": m.group(1).lower(),
+                    "normalized": True, "summary": summary_text}
+
+        # ── UI-TARS 포맷: press(key='enter') / press(enter) / hotkey('enter') ──
+        m = re.search(r"(?:press|hotkey)\(\s*(?:key\s*=\s*)?['\"]?(\w+)['\"]?\s*\)", act)
         if m:
             return {"action": "press", "key": m.group(1).lower(),
                     "summary": summary_text}
