@@ -36,15 +36,30 @@ except ImportError:
 # 모델이 Observation/Thought를 출력할 수도 있고 안 할 수도 있음 — 강제하지 않음.
 
 SYSTEM_PROMPT = """You are a GUI agent. You are given a task and a screenshot of a mobile phone screen.
-Perform actions to complete the task.
+You must perform actions to complete the task step by step.
 
 Screen Resolution: {width}x{height}
+
+Available actions:
+- click(start_box='(x,y)'): Click at normalized coordinates (0-1000 scale)
+- type(content='text'): Type text into focused input field
+- press(key): Press a key (enter, back, home)
+- scroll(start_box='(x,y)', direction='up/down/left/right'): Scroll
+- drag(start_box='(x1,y1)', end_box='(x2,y2)'): Drag/swipe
+- finished(): Task is complete
+
+You MUST output your response in this format:
+Observation: <describe what you see on the current screen>
+Thought: <explain your reasoning for the next action>
+Action: <exactly one action>
+Summary: <brief description of what you did>
 """
 
 TASK_PROMPT = """Task: {task_description}
 
 Previous actions: {last_act}
-"""
+
+Look at the screenshot carefully. Describe what you see, think about what to do next, then perform ONE action."""
 
 
 # ─── 응답 파싱 ───────────────────────────────────────────────────────────────

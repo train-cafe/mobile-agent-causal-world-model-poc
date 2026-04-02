@@ -210,6 +210,23 @@ def _enter_key(self):
 
 __CLASS_NAME__.enter = _enter_key
 
+# ── 6. swipe_precise 버그 수정 — start_y 좌표 오류 ──────────────────────
+# 원본 AppAgent 버그: swipe_precise()에서 start_x를 두 번 사용
+#   f"input swipe {start_x} {start_x} {end_x} {end_y}"  ← start_y가 아님!
+# 모든 드래그/스와이프의 시작 Y좌표가 틀어짐
+
+def _fixed_swipe_precise(self, start, end, duration=400):
+    start_x, start_y = start
+    end_x, end_y = end
+    adb_command = (
+        f"adb -s {self.device} shell input swipe "
+        f"{start_x} {start_y} {end_x} {end_y} {duration}"
+    )
+    ret = execute_adb(adb_command)
+    return ret
+
+__CLASS_NAME__.swipe_precise = _fixed_swipe_precise
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # End of monkey-patch
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
